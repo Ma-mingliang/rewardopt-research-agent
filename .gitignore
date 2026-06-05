@@ -28,7 +28,6 @@ test_project/
 
 # Secrets
 .env
-.env.*
 *.pem
 *.key
 
