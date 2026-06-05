@@ -1,0 +1,127 @@
+llm:
+  provider: openai_compatible
+  model: mimo-v2.5-pro
+  base_url: "https://token-plan-sgp.xiaomimimo.com/v1"
+  api_key_env: "ANTHROPIC_AUTH_TOKEN"
+  timeout_seconds: 120
+  max_retries: 3
+  retry_delay_seconds: 5
+  max_tokens: 8192
+  qps: 2.0
+
+project:
+  path: ""
+  python_file_globs:
+    - "**/*.py"
+  ignore_dirs:
+    - ".git"
+    - ".venv"
+    - "venv"
+    - "__pycache__"
+    - "logs"
+    - "runs"
+    - "wandb"
+    - "checkpoints"
+    - "node_modules"
+
+front_agent:
+  required: true
+  allowed_callers:
+    - "claude_code"
+    - "hermes"
+    - "codex"
+    - "openclaw"
+  require_objective_before_plan: true
+  require_json_protocol: true
+
+objective:
+  name: ""
+  description: ""
+  focus: []
+  primary_score_threshold: 0.05
+  hard_primary_regression_policy: "reject"
+  mean_reward_role: "diagnostic_only"
+
+constraints:
+  forbidden_changes:
+    - "algorithm_body"
+    - "network_architecture"
+    - "optimizer"
+    - "loss"
+    - "replay_buffer"
+    - "base_controller_law"
+  require_human_review_for:
+    - "observation_space_change"
+    - "action_space_change"
+    - "termination_logic_change"
+    - "algorithm_selection_change"
+
+budget:
+  wall_clock_hours: 336
+  gpu_hours: null
+  max_candidates: null
+  max_full_evals: null
+  stop_when_budget_exhausted: true
+
+joint_validation:
+  lqr_degradation_threshold: 0.90
+  stanley_degradation_threshold: 0.90
+  combined_score_threshold: 0.85
+
+metrics:
+  primary: []
+  safety: []
+  diagnostic: []
+  metric_regex: {}
+  metric_thresholds:
+    default_min_improvement_pct: 0.01
+    default_max_regression_pct: 0.10
+  safety_weights: {}
+  cv_threshold: 0.3
+  instability_weight: 0.5
+  screening_threshold: 0.0
+
+literature:
+  enabled: true
+  require_before_propose: true
+  top_k_selected_papers: 5
+  min_relevance_score: 0.60
+  max_queries: 10
+  max_results_per_query: 20
+  max_extracted_ideas: 20
+  deterministic_selection: true
+  classification_categories:
+    - "reward shaping"
+    - "penalty and constraint design"
+    - "curriculum reward"
+    - "robotics locomotion reward"
+    - "control energy and smoothness"
+    - "reward hacking and specification gaming"
+    - "residual control"
+    - "path tracking control"
+
+execution:
+  train_command: ""
+  eval_command: ""
+  max_steps: 20000
+  screening_seeds:
+    - 42
+  full_eval_seeds:
+    - 42
+    - 123
+    - 456
+  confirmation_seeds:
+    - 789
+    - 101112
+  timeout_seconds_per_seed: 3600
+
+git:
+  auto_commit_best: true
+  auto_push_best: false
+  push_remote: "origin"
+  push_branch: null
+
+output:
+  json: false
+  quiet: false
+  log_level: INFO
