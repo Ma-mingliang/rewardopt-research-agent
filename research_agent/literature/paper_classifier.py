@@ -49,7 +49,11 @@ Return JSON:
 {{"categories": ["<cat1>", "<cat2>"], "confidence": <0-1>}}"""
 
 
-def classify_papers(work_dir: Path, config: AgentConfig) -> dict:
+def classify_papers(
+    work_dir: Path,
+    config: AgentConfig,
+    mock_llm: bool = False,
+) -> dict:
     """Classify papers from arxiv_papers.jsonl into taxonomy categories.
 
     Method: keyword pre-classification + LLM fine classification + merge.
@@ -58,6 +62,7 @@ def classify_papers(work_dir: Path, config: AgentConfig) -> dict:
     Args:
         work_dir: .research-agent work directory.
         config: Agent configuration.
+        mock_llm: If True, use keyword-only classification (no LLM calls).
 
     Returns:
         Response dict with classification results.
@@ -74,14 +79,15 @@ def classify_papers(work_dir: Path, config: AgentConfig) -> dict:
 
     # Try LLM classification
     llm_client = None
-    use_llm = True
-    try:
-        llm_client = LLMClient(
-            config.llm.model_dump(),
-            log_path=work_dir / "logs" / "llm_calls.jsonl",
-        )
-    except Exception:
-        use_llm = False
+    use_llm = not mock_llm
+    if use_llm:
+        try:
+            llm_client = LLMClient(
+                config.llm.model_dump(),
+                log_path=work_dir / "logs" / "llm_calls.jsonl",
+            )
+        except Exception:
+            use_llm = False
 
     categories = config.literature.classification_categories or CLASSIFICATION_CATEGORIES
     classified: list[dict] = []

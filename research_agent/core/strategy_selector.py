@@ -13,17 +13,18 @@ from research_agent.interfaces.json_protocol import (
     write_strategy_markdown,
 )
 
-# V1 strategy selection rules: task_type -> optimizer
+# Strategy selection rules: task_type -> optimizer
 _TASK_OPTIMIZER_MAP = {
     "reward_optimization": "reward",
     "controller_residual_optimization": "residual_control",
     "safety_constraint_optimization": "reward",  # handled jointly with residual_control
+    "hpo": "hpo",
+    "curriculum_learning": "curriculum",
+    "observation_optimization": "observation",
+    "action_space_optimization": "action_space",
 }
 
-_TASKS_NEEDING_HUMAN_REVIEW = {
-    "observation_optimization",
-    "action_space_optimization",
-}
+_TASKS_NEEDING_HUMAN_REVIEW: set[str] = set()
 
 
 def select_strategy(work_dir: Path) -> dict:

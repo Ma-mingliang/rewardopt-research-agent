@@ -47,6 +47,7 @@ def select_papers(
     work_dir: Path,
     config: AgentConfig,
     top_k_override: int | None = None,
+    mock_llm: bool = False,
 ) -> dict:
     """Select top-K papers using deterministic relevance scoring.
 
@@ -73,7 +74,7 @@ def select_papers(
         })
 
     # Score papers
-    scored_papers = _score_papers(papers, work_dir, config)
+    scored_papers = _score_papers(papers, work_dir, config, skip_llm=mock_llm)
 
     # Select top-K
     top_k = top_k_override or config.literature.top_k_selected_papers
@@ -155,17 +156,23 @@ def _load_classified_papers(work_dir: Path) -> list[dict]:
     return list(papers_by_id.values())
 
 
-def _score_papers(papers: list[dict], work_dir: Path, config: AgentConfig) -> list[dict]:
+def _score_papers(
+    papers: list[dict],
+    work_dir: Path,
+    config: AgentConfig,
+    skip_llm: bool = False,
+) -> list[dict]:
     """Score all papers using the relevance_score formula."""
     # Try LLM for semantic scores
     llm_client = None
-    try:
-        llm_client = LLMClient(
-            config.llm.model_dump(),
-            log_path=work_dir / "logs" / "llm_calls.jsonl",
-        )
-    except Exception:
-        pass
+    if not skip_llm:
+        try:
+            llm_client = LLMClient(
+                config.llm.model_dump(),
+                log_path=work_dir / "logs" / "llm_calls.jsonl",
+            )
+        except Exception:
+            pass
 
     objective = config.objective
     primary_metrics = [

@@ -296,8 +296,9 @@ def plan_experiments_cmd(json_output: bool):
 
 @main.command("search-papers")
 @click.option("--topic", default=None, help="Explicit search topic override")
+@click.option("--use-pool", is_flag=True, help="Read from pre-collected paper pool instead of arXiv API")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
-def search_papers_cmd(topic: str | None, json_output: bool):
+def search_papers_cmd(topic: str | None, use_pool: bool, json_output: bool):
     """Search arxiv for papers relevant to the project objective."""
     work_dir = _find_work_dir_from_cwd()
     if work_dir is None:
@@ -312,7 +313,7 @@ def search_papers_cmd(topic: str | None, json_output: bool):
     from research_agent.literature.arxiv_searcher import search_papers
 
     try:
-        result = search_papers(work_dir, config, topic_override=topic)
+        result = search_papers(work_dir, config, topic_override=topic, use_pool=use_pool)
         if json_output:
             print_json(result)
         else:
@@ -329,8 +330,9 @@ def search_papers_cmd(topic: str | None, json_output: bool):
 # --- classify-papers ---
 
 @main.command("classify-papers")
+@click.option("--mock-llm", is_flag=True, help="Use keyword-only classification (no LLM calls)")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
-def classify_papers_cmd(json_output: bool):
+def classify_papers_cmd(mock_llm: bool, json_output: bool):
     """Classify found papers into taxonomy categories."""
     work_dir = _find_work_dir_from_cwd()
     if work_dir is None:
@@ -345,7 +347,7 @@ def classify_papers_cmd(json_output: bool):
     from research_agent.literature.paper_classifier import classify_papers
 
     try:
-        result = classify_papers(work_dir, config)
+        result = classify_papers(work_dir, config, mock_llm=mock_llm)
         if json_output:
             print_json(result)
         else:
@@ -363,8 +365,9 @@ def classify_papers_cmd(json_output: bool):
 
 @main.command("select-papers")
 @click.option("--top-k", default=None, type=int, help="Override top-K selection count")
+@click.option("--mock-llm", is_flag=True, help="Skip LLM calls, use keyword-based scoring only")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
-def select_papers_cmd(top_k: int | None, json_output: bool):
+def select_papers_cmd(top_k: int | None, mock_llm: bool, json_output: bool):
     """Select top-K papers by relevance score."""
     work_dir = _find_work_dir_from_cwd()
     if work_dir is None:
@@ -379,7 +382,7 @@ def select_papers_cmd(top_k: int | None, json_output: bool):
     from research_agent.literature.paper_selector import select_papers
 
     try:
-        result = select_papers(work_dir, config, top_k_override=top_k)
+        result = select_papers(work_dir, config, top_k_override=top_k, mock_llm=mock_llm)
         if json_output:
             print_json(result)
         else:
@@ -396,8 +399,9 @@ def select_papers_cmd(top_k: int | None, json_output: bool):
 # --- extract-ideas ---
 
 @main.command("extract-ideas")
+@click.option("--mock-llm", is_flag=True, help="Skip LLM calls, use keyword-based fallback")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
-def extract_ideas_cmd(json_output: bool):
+def extract_ideas_cmd(mock_llm: bool, json_output: bool):
     """Extract research ideas from selected papers."""
     work_dir = _find_work_dir_from_cwd()
     if work_dir is None:
@@ -412,7 +416,7 @@ def extract_ideas_cmd(json_output: bool):
     from research_agent.literature.paper_reader import extract_ideas
 
     try:
-        result = extract_ideas(work_dir, config)
+        result = extract_ideas(work_dir, config, mock_llm=mock_llm)
         if json_output:
             print_json(result)
         else:
@@ -429,8 +433,9 @@ def extract_ideas_cmd(json_output: bool):
 # --- run-plan ---
 
 @main.command("run-plan")
+@click.option("--mock-llm", is_flag=True, help="Skip LLM calls in optimizer, use no-op fallback")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
-def run_plan_cmd(json_output: bool):
+def run_plan_cmd(mock_llm: bool, json_output: bool):
     """Execute the full experiment plan."""
     work_dir = _find_work_dir_from_cwd()
     if work_dir is None:
@@ -445,11 +450,96 @@ def run_plan_cmd(json_output: bool):
     from research_agent.core.executor import run_plan
 
     try:
-        result = run_plan(work_dir, config)
+        result = run_plan(work_dir, config, mock_llm=mock_llm)
         print_json(result)
     except ResearchAgentError as e:
         print_json(e.to_dict())
         sys.exit(1)
+
+
+# --- run-iteration ---
+
+@main.command("run-iteration")
+@click.option("--mock-llm", is_flag=True, help="Skip LLM calls in optimizer, use no-op fallback")
+@click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
+def run_iteration_cmd(mock_llm: bool, json_output: bool):
+    """Execute a single iteration: pick next method batch, propose candidate, evaluate."""
+    work_dir = _find_work_dir_from_cwd()
+    if work_dir is None:
+        print_json(error_response(
+            "NOT_INITIALIZED",
+            "No .research-agent directory found. Run 'init' first.",
+        ))
+        sys.exit(1)
+
+    config = _load_config_or_default(work_dir)
+    state = read_state_json(work_dir)
+    project_path = Path(state.get("project_path", ""))
+
+    if not project_path.exists():
+        print_json(error_response("PROJECT_NOT_FOUND", f"Project path not found: {project_path}"))
+        sys.exit(1)
+
+    from research_agent.core.executor import _init_sampler, _execute_optimizer_phase, _load_plan
+
+    sampler = _init_sampler(work_dir)
+    if sampler is None:
+        print_json(error_response("NO_POOL", "Reward paper pool not found. Cannot iterate."))
+        sys.exit(1)
+
+    # Get next batch
+    batch = sampler.get_next_batch(batch_size=2)
+    if not batch:
+        print_json(ok_response({
+            "iteration_complete": True,
+            "message": "All methods have been tried.",
+            "sampler_summary": sampler.summary(),
+        }))
+        return
+
+    # Load plan and find optimizer phase
+    plan = _load_plan(work_dir)
+    if not plan:
+        print_json(error_response("NO_PLAN", "No experiment plan found."))
+        sys.exit(1)
+
+    phases = plan.get("phases", [])
+    optimizer_phase = None
+    for p in phases:
+        if p.get("optimizer") and p.get("status") != "completed":
+            optimizer_phase = p
+            break
+
+    if optimizer_phase is None:
+        print_json(ok_response({
+            "iteration_complete": True,
+            "message": "No pending optimizer phases.",
+        }))
+        return
+
+    resource_usage = state.get("resource_usage", {
+        "wall_clock_seconds": 0,
+        "gpu_seconds": 0,
+        "candidates_proposed": 0,
+        "full_evals_run": 0,
+    })
+
+    # Execute single iteration (max_candidates=1)
+    phase_copy = dict(optimizer_phase)
+    phase_copy["budget"] = {**optimizer_phase.get("budget", {}), "max_candidates": 1}
+
+    result = _execute_optimizer_phase(
+        work_dir, config, phase_copy, project_path, resource_usage, batch,
+        mock_llm=mock_llm,
+    )
+
+    print_json(ok_response({
+        "iteration_complete": True,
+        "methods_used": [m.get("method_id", "") for m in batch],
+        "categories": list({m.get("category", "") for m in batch}),
+        "sampler_summary": sampler.summary(),
+        "phase_result": result,
+    }))
 
 
 # --- run ---
@@ -519,7 +609,7 @@ def status(json_output: bool, clear_stale_lock: bool):
 # --- propose-candidate ---
 
 @main.command("propose-candidate")
-@click.option("--optimizer", required=True, type=click.Choice(["reward", "residual_control"]), help="Optimizer to use")
+@click.option("--optimizer", required=True, type=click.Choice(["reward", "residual_control", "hpo", "curriculum", "observation", "action_space"]), help="Optimizer to use")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON to stdout")
 def propose_candidate_cmd(optimizer: str, json_output: bool):
     """Propose a new candidate patch using the specified optimizer."""
@@ -532,14 +622,11 @@ def propose_candidate_cmd(optimizer: str, json_output: bool):
     state = read_state_json(work_dir)
     project_path = Path(state.get("project_path", ""))
 
-    from research_agent.optimizers.reward.optimizer import RewardOptimizer
-    from research_agent.optimizers.residual_control.optimizer import ResidualControlOptimizer
+    from research_agent.optimizers import get_optimizer_class
 
     try:
-        if optimizer == "reward":
-            opt = RewardOptimizer(work_dir, config, project_path)
-        else:
-            opt = ResidualControlOptimizer(work_dir, config, project_path)
+        opt_cls = get_optimizer_class(optimizer)
+        opt = opt_cls(work_dir, config, project_path)
 
         # Load experiment plan phase
         import json as _json
@@ -561,7 +648,8 @@ def propose_candidate_cmd(optimizer: str, json_output: bool):
             sys.exit(1)
 
         baseline = state.get("baseline_metrics", {})
-        candidate = opt.propose_candidate(phase, baseline)
+        ideas = _load_ideas_for_cli(work_dir)
+        candidate = opt.propose_candidate(phase, baseline, ideas)
 
         print_json(ok_response({
             "candidate_id": candidate.candidate_id,
@@ -683,6 +771,24 @@ def _find_work_dir_from_cwd() -> Path | None:
     if parent_work_dir.exists():
         return parent_work_dir
     return None
+
+
+def _load_ideas_for_cli(work_dir: Path) -> list[dict]:
+    """Load extracted ideas from JSONL for CLI commands."""
+    import json as _json
+    path = work_dir / "logs" / "extracted_ideas.jsonl"
+    if not path.exists():
+        return []
+    ideas = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    ideas.append(_json.loads(line))
+    except (_json.JSONDecodeError, OSError):
+        pass
+    return ideas
 
 
 if __name__ == "__main__":

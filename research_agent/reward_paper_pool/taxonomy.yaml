@@ -1,0 +1,165 @@
+categories:
+  A_potential_based_reward:
+    min_papers: 10
+    priority: S
+    hrrl_match: high
+    title: Potential-Based Reward Shaping
+    keywords:
+      - potential-based reward shaping
+      - policy invariant reward shaping
+      - reward shaping potential function
+      - potential based shaping hierarchical reinforcement learning
+      - multi objective potential based reward shaping
+      - shaping reward potential function
+      - tracking improvement reward
+    feature_signals:
+      - gamma * Phi(s_next) - Phi(s)
+      - policy invariance
+      - shaping reward
+      - potential function
+      - tracking improvement reward
+    typical_formula: "R'(s,a,s') = R(s,a,s') + gamma * Phi(s') - Phi(s)"
+  B_safety_constraint_reward:
+    min_papers: 10
+    priority: S
+    hrrl_match: high
+    title: Safety / Constraint / Risk-Aware Reward
+    keywords:
+      - safe reinforcement learning reward shaping
+      - constrained reinforcement learning reward penalty
+      - barrier function reward shaping reinforcement learning
+      - risk aware reward shaping
+      - robot navigation reward shaping safety
+      - control barrier function reinforcement learning reward
+      - collision penalty reinforcement learning
+    feature_signals:
+      - safety penalty
+      - constraint penalty
+      - barrier function
+      - collision penalty
+      - fall penalty
+      - risk-aware reward
+    typical_formula: "R_safe = R_task - lambda_c * violation_cost - lambda_r * risk"
+  C_curriculum_subgoal_reward:
+    min_papers: 10
+    priority: A
+    hrrl_match: medium_high
+    title: Curriculum / Subgoal / Progress Reward
+    keywords:
+      - curriculum reward reinforcement learning
+      - subgoal reward shaping reinforcement learning
+      - progress reward reinforcement learning
+      - staged reward robot learning
+      - automatic curriculum reward
+      - reward shaping with subgoals
+      - task decomposition reward reinforcement learning
+    feature_signals:
+      - stage-wise reward
+      - subgoal reward
+      - progress reward
+      - automatic curriculum
+      - task decomposition
+    typical_formula: "R = R_task + beta_stage * progress(s, goal_k)"
+  D_adaptive_dynamic_reward:
+    min_papers: 10
+    priority: A
+    hrrl_match: medium
+    title: Adaptive / Dynamic Reward Weighting
+    keywords:
+      - adaptive reward shaping reinforcement learning
+      - dynamic reward weighting reinforcement learning
+      - self adaptive reward shaping
+      - automated reward weight tuning
+      - multi objective reward weights reinforcement learning
+      - reward weight adaptation robot learning
+      - non stationary reward schedule
+    feature_signals:
+      - reward weights change over time
+      - adaptive weighting
+      - self-adaptive reward
+      - dynamic multi-objective reward
+      - non-stationary reward schedule
+    typical_formula: "R_t = sum_i w_i(t) * r_i"
+  E_hierarchical_reward:
+    min_papers: 10
+    priority: S
+    hrrl_match: high
+    title: Hierarchical Reward / HRL Reward Design
+    keywords:
+      - hierarchical reinforcement learning reward shaping
+      - hierarchical reward design
+      - manager worker reward reinforcement learning
+      - option reward shaping reinforcement learning
+      - subtask reward hierarchical reinforcement learning
+      - feudal reinforcement learning reward
+      - high level low level reward
+    feature_signals:
+      - high-level reward
+      - low-level reward
+      - manager worker reward
+      - option-level reward
+      - subtask reward
+    typical_formula: "R = R_manager(g, s) + R_worker(a, g, s)"
+  F_residual_aware_reward:
+    min_papers: 10
+    priority: S
+    hrrl_match: very_high
+    title: Residual-Aware Reward / Residual RL / Classical Controller Residual
+    keywords:
+      - residual reinforcement learning reward
+      - residual policy learning robot control reward
+      - reinforcement learning residual controller reward
+      - LQR residual reinforcement learning
+      - classical controller residual reinforcement learning
+      - residual reinforcement learning robotics
+      - learning residual actions robot control
+      - residual action penalty reinforcement learning
+    feature_signals:
+      - base controller residual action
+      - residual magnitude penalty
+      - residual smoothness penalty
+      - classical controller is not modified
+      - RL learns correction only
+    typical_formula: "u = u_base + u_residual; R = R_task - lambda * ||u_residual||^2"
+  G_llm_reward_generation:
+    min_papers: 10
+    priority: A
+    hrrl_match: high
+    title: LLM Reward Generation / Automated Reward Design
+    keywords:
+      - LLM reward design reinforcement learning
+      - large language model reward function generation
+      - automated reward design reinforcement learning
+      - Eureka reward generation
+      - reward code generation reinforcement learning
+      - self refining reward function language model
+      - LLM reward shaping robotics
+      - reward evolution reinforcement learning
+    feature_signals:
+      - LLM generates reward code
+      - iterative reward improvement
+      - reward evolution
+      - reward code search
+      - feedback from training logs
+    typical_formula: "reward_code = LLM(task, logs, feedback); R = execute(reward_code)"
+  H_learned_preference_reward:
+    min_papers: 10
+    priority: B
+    hrrl_match: low_medium
+    title: Learned Reward / Preference / IRL / Reward Model
+    keywords:
+      - learned reward function reinforcement learning
+      - reward model deep reinforcement learning
+      - inverse reinforcement learning reward function
+      - preference based reinforcement learning reward
+      - active preference learning reward design
+      - reward learning from demonstrations
+      - human feedback reward model reinforcement learning
+    feature_signals:
+      - learned reward
+      - reward model
+      - preference learning
+      - inverse RL
+      - demonstrations
+      - human feedback
+    typical_formula: "R_hat = f_theta(s, a, preference_or_demo)"

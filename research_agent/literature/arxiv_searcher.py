@@ -16,12 +16,14 @@ from research_agent.core.state import advance_phase, read_state_json, write_stat
 from research_agent.interfaces.front_agent_contract import require_phase
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
+_POOL_PATH = Path(__file__).resolve().parent.parent / "reward_paper_pool" / "paper_pool.jsonl"
 
 
 def search_papers(
     work_dir: Path,
     config: AgentConfig,
     topic_override: str | None = None,
+    use_pool: bool = False,
 ) -> dict:
     """Search arxiv for papers relevant to the project objective.
 
@@ -32,10 +34,14 @@ def search_papers(
     - From primary metric names
     - From topic_override (if provided)
 
+    When use_pool=True, reads from the pre-collected reward_paper_pool
+    instead of calling the arXiv API.
+
     Args:
         work_dir: .research-agent work directory.
         config: Agent configuration.
         topic_override: Optional explicit search topic.
+        use_pool: If True, read from paper_pool.jsonl instead of arXiv API.
 
     Returns:
         Response dict with search results.
@@ -45,22 +51,26 @@ def search_papers(
     state = read_state_json(work_dir)
     lit_config = config.literature
 
-    # Generate queries
-    queries = _generate_queries(work_dir, config, topic_override)
-    max_queries = lit_config.max_queries
-    queries = queries[:max_queries]
+    if use_pool:
+        all_papers = _load_from_pool(config)
+        queries = ["(pre-collected pool)"]
+    else:
+        # Generate queries
+        queries = _generate_queries(work_dir, config, topic_override)
+        max_queries = lit_config.max_queries
+        queries = queries[:max_queries]
 
-    # Search arxiv
-    all_papers: list[dict] = []
-    seen_ids: set[str] = set()
+        # Search arxiv
+        all_papers = []
+        seen_ids: set[str] = set()
 
-    for query in queries:
-        papers = _search_arxiv(query, lit_config.max_results_per_query)
-        for paper in papers:
-            pid = paper.get("paper_id", "")
-            if pid not in seen_ids:
-                seen_ids.add(pid)
-                all_papers.append(paper)
+        for query in queries:
+            papers = _search_arxiv(query, lit_config.max_results_per_query)
+            for paper in papers:
+                pid = paper.get("paper_id", "")
+                if pid not in seen_ids:
+                    seen_ids.add(pid)
+                    all_papers.append(paper)
 
     # Write outputs
     log_path = work_dir / "logs" / "arxiv_papers.jsonl"
@@ -78,6 +88,7 @@ def search_papers(
 
     return ok_response({
         "papers_found": len(all_papers),
+        "source": "pool" if use_pool else "arxiv_api",
         "queries_used": queries,
         "log_path": "logs/arxiv_papers.jsonl",
         "report_path": "reports/arxiv_papers.md",
@@ -134,6 +145,51 @@ def _generate_queries(
             unique.append(q.strip())
 
     return unique
+
+
+def _load_from_pool(config: AgentConfig) -> list[dict]:
+    """Load papers from the pre-collected reward_paper_pool.
+
+    Normalizes pool format to match pipeline expectations:
+    - year -> published
+    - url -> arxiv_url
+    """
+    if not _POOL_PATH.exists():
+        return []
+
+    papers: list[dict] = []
+    with open(_POOL_PATH, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Normalize authors: handle both str and dict formats
+            raw_authors = raw.get("authors", [])
+            authors = []
+            for a in raw_authors:
+                if isinstance(a, dict):
+                    authors.append(a.get("fullname", a.get("name", str(a))))
+                else:
+                    authors.append(str(a))
+
+            # Normalize to pipeline format
+            paper = {
+                "paper_id": raw.get("paper_id", ""),
+                "title": raw.get("title", ""),
+                "abstract": raw.get("abstract", ""),
+                "authors": authors,
+                "published": str(raw.get("year", raw.get("published", ""))),
+                "arxiv_url": raw.get("url", raw.get("arxiv_url", "")),
+                "categories": raw.get("categories", []),
+            }
+            papers.append(paper)
+
+    return papers
 
 
 def _search_arxiv(query: str, max_results: int) -> list[dict]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,20 @@ class RewardOptimizer(BaseOptimizer):
 
         candidate_id = self.next_candidate_id()
 
+        # Build source metadata from ideas
+        source_meta = self._build_source_meta(ideas or [])
+
+        # Skip LLM if mock mode
+        if self._mock_llm:
+            return Candidate(
+                candidate_id=candidate_id,
+                optimizer=self.name,
+                description="No-op candidate (mock-llm mode)",
+                patch_diff="",
+                allowed_changes=allowed,
+                source_idea=json.dumps(source_meta),
+            )
+
         # Try LLM proposal
         if self.llm_client is not None:
             try:
@@ -93,7 +108,7 @@ class RewardOptimizer(BaseOptimizer):
                         description=f"{desc} (rationale: {rationale})",
                         patch_diff=diff,
                         allowed_changes=allowed,
-                        source_idea="llm_proposal",
+                        source_idea=json.dumps(source_meta),
                     )
             except Exception:
                 pass
@@ -105,7 +120,7 @@ class RewardOptimizer(BaseOptimizer):
             description="No-op candidate (LLM unavailable)",
             patch_diff="",
             allowed_changes=allowed,
-            source_idea="fallback",
+            source_idea=json.dumps(source_meta),
         )
 
     def _read_reward_code(self, allowed_changes: list[dict]) -> str:
@@ -140,7 +155,54 @@ class RewardOptimizer(BaseOptimizer):
             return "  (no ideas available)"
         lines = []
         for idea in ideas[:5]:
-            desc = idea.get("description", "")
             cat = idea.get("category", "")
-            lines.append(f"  - [{cat}] {desc}")
+            desc = idea.get("description", "")
+            # Rich method from pool
+            if idea.get("implementation_template"):
+                core = idea.get("core_idea", desc)
+                formula = idea.get("reward_formula", "N/A")
+                template = idea.get("implementation_template", "N/A")
+                layers = ", ".join(idea.get("applicable_layers", []))
+                metrics = ", ".join(idea.get("applicable_metrics", []))
+                risks = ", ".join(idea.get("risks", [])[:2])
+                lines.append(f"  [{cat}] {core}")
+                lines.append(f"    Formula: {formula}")
+                lines.append(f"    Template: {template}")
+                if layers:
+                    lines.append(f"    Layers: {layers}")
+                if metrics:
+                    lines.append(f"    Metrics: {metrics}")
+                if risks:
+                    lines.append(f"    Risks: {risks}")
+            else:
+                lines.append(f"  - [{cat}] {desc}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _build_source_meta(ideas: list[dict]) -> dict:
+        """Extract source metadata from ideas for candidate tracking."""
+        method_ids = []
+        categories = []
+        source_papers = []
+        for idea in ideas:
+            mid = idea.get("method_id", "")
+            if mid:
+                method_ids.append(mid)
+            cat = idea.get("category", "")
+            if cat and cat not in categories:
+                categories.append(cat)
+            papers = idea.get("source_papers", [])
+            for p in papers:
+                if p not in source_papers:
+                    source_papers.append(p)
+            # Also check source_paper dict
+            sp = idea.get("source_paper", {})
+            pid = sp.get("paper_id", "")
+            if pid and pid not in source_papers:
+                source_papers.append(pid)
+        return {
+            "source_method_ids": method_ids,
+            "source_categories": categories,
+            "source_papers": source_papers,
+            "source_idea": "pool_methods" if method_ids else "extracted_ideas",
+        }

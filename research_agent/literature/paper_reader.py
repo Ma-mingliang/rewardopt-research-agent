@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,11 @@ Return JSON:
 {{"ideas": [{{"description": "<idea>", "category": "<category>", "feasibility": "high|medium|low"}}]}}"""
 
 
-def extract_ideas(work_dir: Path, config: AgentConfig) -> dict:
+def extract_ideas(
+    work_dir: Path,
+    config: AgentConfig,
+    mock_llm: bool = False,
+) -> dict:
     """Extract ideas from selected papers.
 
     Traverses selected papers, combines with knowledge base,
@@ -38,6 +43,7 @@ def extract_ideas(work_dir: Path, config: AgentConfig) -> dict:
     Args:
         work_dir: .research-agent work directory.
         config: Agent configuration.
+        mock_llm: If True, skip LLM calls and use keyword-based fallback.
 
     Returns:
         Response dict with extracted ideas.
@@ -54,28 +60,44 @@ def extract_ideas(work_dir: Path, config: AgentConfig) -> dict:
 
     # Try LLM extraction
     llm_client = None
-    try:
-        llm_client = LLMClient(
-            config.llm.model_dump(),
-            log_path=work_dir / "logs" / "llm_calls.jsonl",
-        )
-    except Exception:
-        pass
+    if not mock_llm:
+        try:
+            llm_client = LLMClient(
+                config.llm.model_dump(),
+                log_path=work_dir / "logs" / "llm_calls.jsonl",
+            )
+        except Exception:
+            pass
 
     max_ideas = config.literature.max_extracted_ideas
     objective = config.objective
 
     all_ideas: list[dict] = []
     idea_counter = 0
+    errors: list[dict] = []
+    total = min(len(papers), 20)
 
-    for paper in papers[:20]:  # Limit to top 20 papers for extraction
-        ideas = _extract_from_paper(paper, objective, llm_client)
+    for idx, paper in enumerate(papers[:20]):
+        paper_id = paper.get("paper_id", "?")
+        title = paper.get("title", "?")[:60]
+        _log_progress(f"[extract-ideas] {idx+1}/{total} {paper_id} {title}")
+
+        try:
+            ideas = _extract_from_paper(paper, objective, llm_client)
+        except Exception as e:
+            errors.append({
+                "paper_id": paper_id,
+                "error": str(e)[:200],
+            })
+            _log_progress(f"[extract-ideas]   ERROR: {str(e)[:80]}")
+            continue
+
         for idea in ideas:
             idea_counter += 1
             idea_record = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "idea_id": f"idea_{idea_counter:03d}",
-                "source_paper": paper.get("paper_id", ""),
+                "source_paper": paper_id,
                 "description": idea.get("description", ""),
                 "category": idea.get("category", "uncategorized"),
                 "feasibility": idea.get("feasibility", "medium"),
@@ -83,6 +105,8 @@ def extract_ideas(work_dir: Path, config: AgentConfig) -> dict:
                 "status": "open",
             }
             all_ideas.append(idea_record)
+
+        _log_progress(f"[extract-ideas]   -> {len(ideas)} idea(s)")
 
     # Dedup by description similarity
     all_ideas = _dedup_ideas(all_ideas)
@@ -106,8 +130,11 @@ def extract_ideas(work_dir: Path, config: AgentConfig) -> dict:
     state = advance_phase(state, "ideas_extracted")
     write_state_json(work_dir, state)
 
-    return ok_response({
+    result: dict[str, Any] = {
         "ideas_extracted": len(all_ideas),
+        "papers_processed": total,
+        "errors": len(errors),
+        "source": "mock" if mock_llm else ("llm" if llm_client else "fallback"),
         "ideas": [
             {
                 "idea_id": i["idea_id"],
@@ -123,7 +150,10 @@ def extract_ideas(work_dir: Path, config: AgentConfig) -> dict:
         "log_path": "logs/extracted_ideas.jsonl",
         "report_path": "reports/extracted_ideas.md",
         "next_action": "Call 'run-plan' to start experiment execution.",
-    })
+    }
+    if errors:
+        result["error_details"] = errors[:5]
+    return ok_response(result)
 
 
 def _load_selected_papers(work_dir: Path) -> list[dict]:
@@ -158,23 +188,19 @@ def _extract_from_paper(
             "feasibility": "medium",
         }]
 
-    try:
-        response = llm_client.call(
-            system_prompt=EXTRACT_SYSTEM_PROMPT,
-            user_prompt=EXTRACT_USER_PROMPT.format(
-                title=paper.get("title", ""),
-                abstract=paper.get("abstract", "")[:500],
-                categories=", ".join(paper.get("categories", [])),
-                objective=getattr(objective, "description", "") or getattr(objective, "name", ""),
-                focus=", ".join(getattr(objective, "focus", [])[:5]),
-            ),
-            max_tokens=1024,
-        )
-        if response.parsed:
-            return response.parsed.get("ideas", [])
-    except Exception:
-        pass
-
+    response = llm_client.call(
+        system_prompt=EXTRACT_SYSTEM_PROMPT,
+        user_prompt=EXTRACT_USER_PROMPT.format(
+            title=paper.get("title", ""),
+            abstract=paper.get("abstract", "")[:500],
+            categories=", ".join(paper.get("categories", [])),
+            objective=getattr(objective, "description", "") or getattr(objective, "name", ""),
+            focus=", ".join(getattr(objective, "focus", [])[:5]),
+        ),
+        max_tokens=1024,
+    )
+    if response.parsed:
+        return response.parsed.get("ideas", [])
     return []
 
 
@@ -231,3 +257,8 @@ def _generate_markdown(ideas: list[dict]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _log_progress(msg: str) -> None:
+    """Print progress to stderr (not stdout, which is reserved for JSON)."""
+    print(msg, file=sys.stderr, flush=True)

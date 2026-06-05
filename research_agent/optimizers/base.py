@@ -62,15 +62,19 @@ class BaseOptimizer(ABC):
         work_dir: Path,
         config: AgentConfig,
         project_path: Path,
+        mock_llm: bool = False,
     ):
         self.work_dir = work_dir
         self.config = config
         self.project_path = project_path
+        self._mock_llm = mock_llm
         self._llm_client: LLMClient | None = None
         self._candidate_counter = 0
 
     @property
     def llm_client(self) -> LLMClient | None:
+        if self._mock_llm:
+            return None
         if self._llm_client is None:
             try:
                 self._llm_client = LLMClient(
