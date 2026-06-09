@@ -14,6 +14,20 @@ from research_agent.core.output import append_jsonl
 from research_agent.execution.experiment_runner import RunResult, aggregate_metrics, run_eval, run_full_eval
 
 
+def normalize_allowed_changes(allowed: list) -> list[dict]:
+    """Normalize allowed_changes to list[dict] format.
+
+    Handles both string format ('env.py') and dict format ({file: 'env.py', line_range: ...}).
+    """
+    result = []
+    for item in allowed:
+        if isinstance(item, str):
+            result.append({"file": item, "line_range": None})
+        elif isinstance(item, dict):
+            result.append(item)
+    return result
+
+
 class Candidate:
     """Represents a proposed code change candidate."""
 
@@ -32,9 +46,8 @@ class Candidate:
         self.patch_diff = patch_diff
         self.allowed_changes = allowed_changes
         self.source_idea = source_idea
-        self.screening_result: dict | None = None
         self.full_eval_result: dict | None = None
-        self.status = "proposed"  # proposed -> screened -> accepted/rejected
+        self.status = "proposed"  # proposed -> accepted/rejected
         self.rejection_reason: str | None = None
 
     def to_dict(self) -> dict:
@@ -45,7 +58,6 @@ class Candidate:
             "patch_diff": self.patch_diff[:500],
             "source_idea": self.source_idea,
             "status": self.status,
-            "screening_result": self.screening_result,
             "full_eval_result": self.full_eval_result,
             "rejection_reason": self.rejection_reason,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -108,52 +120,18 @@ class BaseOptimizer(ABC):
         """
         ...
 
-    def screen_candidate(
-        self,
-        candidate: Candidate,
-        config: AgentConfig | None = None,
-    ) -> Candidate:
-        """Screen a candidate with quick eval on screening seeds.
-
-        Args:
-            candidate: Candidate to screen.
-            config: Override config (uses self.config if None).
-
-        Returns:
-            Candidate with screening_result populated.
-        """
-        cfg = config or self.config
-        seeds = cfg.execution.screening_seeds
-
-        results = run_full_eval(self.project_path, cfg, seeds, self.work_dir)
-        aggregated = aggregate_metrics(results)
-
-        has_failure = any(r.return_code != 0 for r in results)
-        candidate.screening_result = {
-            "metrics": aggregated,
-            "failed": has_failure,
-            "seeds": seeds,
-        }
-
-        if has_failure:
-            candidate.status = "rejected"
-            candidate.rejection_reason = "Screening eval failed"
-        else:
-            candidate.status = "screened"
-
-        self._log_candidate(candidate)
-        return candidate
-
     def full_eval_candidate(
         self,
         candidate: Candidate,
         config: AgentConfig | None = None,
+        checkpoint_dir: Path | None = None,
     ) -> Candidate:
         """Full eval on all seeds.
 
         Args:
             candidate: Candidate to evaluate.
             config: Override config.
+            checkpoint_dir: Directory to save best model checkpoint.
 
         Returns:
             Candidate with full_eval_result populated.
@@ -161,7 +139,8 @@ class BaseOptimizer(ABC):
         cfg = config or self.config
         seeds = cfg.execution.full_eval_seeds
 
-        results = run_full_eval(self.project_path, cfg, seeds, self.work_dir)
+        results = run_full_eval(self.project_path, cfg, seeds, self.work_dir,
+                                checkpoint_dir=checkpoint_dir)
         aggregated = aggregate_metrics(results)
 
         has_failure = any(r.return_code != 0 for r in results)

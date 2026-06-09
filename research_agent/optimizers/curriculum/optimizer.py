@@ -61,7 +61,8 @@ class CurriculumOptimizer(BaseOptimizer):
         Uses LLM to generate a patch based on training code and baseline metrics.
         Falls back to a no-op patch if LLM is unavailable.
         """
-        allowed = phase.get("allowed_changes", [])
+        from research_agent.optimizers.base import normalize_allowed_changes
+        allowed = normalize_allowed_changes(phase.get("allowed_changes", []))
         forbidden = phase.get("forbidden_changes", [])
 
         code = self._read_training_code(allowed)

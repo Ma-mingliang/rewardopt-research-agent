@@ -24,9 +24,12 @@ TERMINAL_PHASES = frozenset({"completed", "budget_exhausted", "interrupted", "er
 
 def initial_state(project_path: str, work_dir: str) -> dict:
     """Return the initial state.json dict."""
+    from pathlib import Path
+    # Always resolve path to avoid encoding issues
+    resolved_path = str(Path(project_path).resolve())
     return {
         "version": 1,
-        "project_path": project_path,
+        "project_path": resolved_path,
         "work_dir": work_dir,
         "phase": "initialized",
         "front_agent": {
@@ -76,7 +79,6 @@ def initial_state(project_path: str, work_dir: str) -> dict:
             "gpu_seconds": None,
             "candidates": 0,
             "full_evals": 0,
-            "screening_evals": 0,
         },
         "stop_reason": None,
         "progress": None,
@@ -88,20 +90,24 @@ def initial_state(project_path: str, work_dir: str) -> dict:
 
 
 def write_state_json(work_dir: Path, state: dict) -> None:
-    """Atomic write of state.json.
+    """Write state.json with retry for Windows file locking.
 
-    Strategy: write .tmp + fsync, then os.replace to overwrite state.json.
-    os.replace is atomic on both Unix (rename(2)) and Windows (MoveFileEx).
+    Uses direct file write with retry. Does not verify to avoid race conditions.
     """
     state_path = work_dir / "state.json"
-    tmp_path = work_dir / "state.json.tmp"
 
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-
-    os.replace(str(tmp_path), str(state_path))
+    for attempt in range(5):
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+                f.flush()
+            return
+        except OSError:
+            if attempt < 4:
+                import time
+                time.sleep(0.2 * (attempt + 1))
+            else:
+                raise
 
 
 def read_state_json(work_dir: Path) -> dict:
@@ -109,16 +115,24 @@ def read_state_json(work_dir: Path) -> dict:
 
     1. Try state.json.
     2. If corrupt, try state.json.tmp (may be latest write from a crash).
-    3. If both fail, raise StateFileCorruptError.
+    3. If neither exists, raise FileNotFoundError.
+    4. If both corrupt, raise StateFileCorruptError.
     """
     state_path = work_dir / "state.json"
     tmp_path = work_dir / "state.json.tmp"
+
+    # Check if files exist
+    if not state_path.exists() and not tmp_path.exists():
+        raise FileNotFoundError(f"state.json not found in {work_dir}")
 
     for path in (state_path, tmp_path):
         if path.exists():
             try:
                 with open(path, encoding="utf-8") as f:
-                    return json.load(f)
+                    content = f.read()
+                    if not content.strip():
+                        continue
+                    return json.loads(content)
             except (json.JSONDecodeError, OSError):
                 continue
 

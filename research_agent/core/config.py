@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -73,10 +73,7 @@ class BudgetConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     wall_clock_hours: int = 336
-    gpu_hours: int | None = None
-    max_candidates: int | None = None
-    max_full_evals: int | None = None
-    stop_when_budget_exhausted: bool = True
+    gpu_hours: Optional[int] = None
 
 
 class JointValidationConfig(BaseModel):
@@ -105,7 +102,6 @@ class MetricsConfig(BaseModel):
     safety_weights: dict[str, float] = Field(default_factory=dict)
     cv_threshold: float = 0.3
     instability_weight: float = 0.5
-    screening_threshold: float = 0.0
 
 
 class LiteratureConfig(BaseModel):
@@ -134,7 +130,6 @@ class ExecutionConfig(BaseModel):
     train_command: str = ""
     eval_command: str = ""
     max_steps: int = 20000
-    screening_seeds: list[int] = Field(default_factory=lambda: [42])
     full_eval_seeds: list[int] = Field(default_factory=lambda: [42, 123, 456])
     confirmation_seeds: list[int] = Field(default_factory=lambda: [789, 101112])
     timeout_seconds_per_seed: int = 3600
@@ -145,8 +140,9 @@ class GitConfig(BaseModel):
 
     auto_commit_best: bool = True
     auto_push_best: bool = False
+    auto_push: bool = False
     push_remote: str = "origin"
-    push_branch: str | None = None
+    push_branch: Optional[str] = None
 
 
 class OutputConfig(BaseModel):
@@ -155,6 +151,35 @@ class OutputConfig(BaseModel):
     json_output: bool = Field(default=False, alias="json")
     quiet: bool = False
     log_level: str = "INFO"
+
+
+class OptimizerConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    active_categories: list[str] = Field(default_factory=list)
+    methods_per_category: int = 2
+
+
+class EvalMetricConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+    direction: str = "maximize"  # maximize or minimize
+    weight: float = 0.0
+    hard_min: Optional[float] = None
+    hard_max: Optional[float] = None
+
+
+class EvaluationConfig(BaseModel):
+    """Fair evaluation configuration for optimizer."""
+    model_config = ConfigDict(extra="ignore")
+
+    test_episodes: int = 30
+    checkpoint_dir: str = "model/checkpoints"
+    modifiable_files: list[str] = Field(default_factory=lambda: ["env.py"])
+    metrics: list[EvalMetricConfig] = Field(default_factory=list)
+    composite_threshold: float = 0.0
+    llm_weight: float = 0.2
 
 
 class AgentConfig(BaseModel):
@@ -170,10 +195,12 @@ class AgentConfig(BaseModel):
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     joint_validation: JointValidationConfig = Field(default_factory=JointValidationConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     literature: LiteratureConfig = Field(default_factory=LiteratureConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
 
 
 def load_config(work_dir: Path) -> AgentConfig:

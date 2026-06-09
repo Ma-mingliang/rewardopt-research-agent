@@ -30,6 +30,7 @@ def run_train(
     seed: int,
     extra_env: dict[str, str] | None = None,
     timeout_override: int | None = None,
+    checkpoint_dir: Path | None = None,
 ) -> RunResult:
     """Run training command for a single seed.
 
@@ -39,6 +40,7 @@ def run_train(
         seed: Random seed.
         extra_env: Additional environment variables.
         timeout_override: Override timeout from config.
+        checkpoint_dir: Directory to save best model checkpoint.
 
     Returns:
         RunResult with stdout, stderr, metrics, and timing.
@@ -56,8 +58,13 @@ def run_train(
     # Format command with seed
     formatted_command = command.replace("{seed}", str(seed))
 
+    # Pass checkpoint_dir via environment variable
+    env = dict(extra_env) if extra_env else {}
+    if checkpoint_dir:
+        env["RA_CHECKPOINT_DIR"] = str(checkpoint_dir)
+
     timeout = timeout_override or config.execution.timeout_seconds_per_seed
-    return _run_subprocess(project_path, formatted_command, timeout, extra_env)
+    return _run_subprocess(project_path, formatted_command, timeout, env or None)
 
 
 def run_eval(
@@ -116,6 +123,7 @@ def run_full_eval(
     seeds: list[int] | None = None,
     work_dir: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    checkpoint_dir: Path | None = None,
 ) -> list[RunResult]:
     """Run evaluation across multiple seeds.
 
@@ -125,6 +133,7 @@ def run_full_eval(
         seeds: Seeds to evaluate (defaults to config.execution.full_eval_seeds).
         work_dir: .research-agent work dir for artifact lookup.
         extra_env: Additional environment variables.
+        checkpoint_dir: Directory to save best model checkpoint.
 
     Returns:
         List of RunResult, one per seed.
@@ -132,9 +141,14 @@ def run_full_eval(
     if seeds is None:
         seeds = config.execution.full_eval_seeds
 
+    # Pass checkpoint_dir via environment
+    env = dict(extra_env) if extra_env else {}
+    if checkpoint_dir:
+        env["RA_CHECKPOINT_DIR"] = str(checkpoint_dir)
+
     results: list[RunResult] = []
     for seed in seeds:
-        result = run_eval(project_path, config, seed, work_dir, extra_env)
+        result = run_eval(project_path, config, seed, work_dir, env or None)
         results.append(result)
 
     return results

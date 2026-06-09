@@ -76,8 +76,6 @@ def plan_experiments(work_dir: Path, config: AgentConfig) -> dict:
         "global_budget": {
             "wall_clock_hours": config.budget.wall_clock_hours,
             "gpu_hours": config.budget.gpu_hours,
-            "max_candidates": config.budget.max_candidates,
-            "max_full_evals": config.budget.max_full_evals,
         },
         "phases": phases,
     }
@@ -138,8 +136,6 @@ def _build_baseline_phase(config: AgentConfig) -> dict:
         "primary_metrics": [m.get("name", m) if isinstance(m, dict) else m for m in config.metrics.primary],
         "safety_metrics": [m.get("name", m) if isinstance(m, dict) else m for m in config.metrics.safety],
         "budget": {
-            "max_candidates": 0,
-            "max_full_evals": 1,
             "timeout_seconds": config.execution.timeout_seconds_per_seed * len(config.execution.full_eval_seeds),
         },
         "rollback_policy": "git_checkout",
@@ -188,9 +184,6 @@ def _build_optimizer_phase(
         if tt in ("reward_optimization", "controller_residual_optimization", "safety_constraint_optimization")
     ]
 
-    max_candidates = config.budget.max_candidates or 50
-    max_full_evals = config.budget.max_full_evals or 20
-
     return {
         "phase_id": phase_id,
         "dependencies": ["baseline"],
@@ -204,8 +197,6 @@ def _build_optimizer_phase(
         "primary_metrics": [m.get("name", m) if isinstance(m, dict) else m for m in config.metrics.primary],
         "safety_metrics": [m.get("name", m) if isinstance(m, dict) else m for m in config.metrics.safety],
         "budget": {
-            "max_candidates": max_candidates,
-            "max_full_evals": max_full_evals,
             "timeout_seconds": config.execution.timeout_seconds_per_seed * len(config.execution.full_eval_seeds),
         },
         "rollback_policy": "git_checkout",
@@ -228,8 +219,6 @@ def _build_joint_validation_phase(optimizers: list[str], config: AgentConfig) ->
         "primary_metrics": [m.get("name", m) if isinstance(m, dict) else m for m in config.metrics.primary],
         "safety_metrics": [m.get("name", m) if isinstance(m, dict) else m for m in config.metrics.safety],
         "budget": {
-            "max_candidates": 0,
-            "max_full_evals": 1,
             "timeout_seconds": config.execution.timeout_seconds_per_seed * len(config.execution.full_eval_seeds),
         },
         "rollback_policy": "git_checkout",
@@ -260,8 +249,7 @@ def _generate_markdown(plan: dict) -> str:
     lines.append("")
     lines.append(f"- Wall clock: {budget.get('wall_clock_hours', 'N/A')}h")
     lines.append(f"- GPU hours: {budget.get('gpu_hours', 'N/A')}")
-    lines.append(f"- Max candidates: {budget.get('max_candidates', 'N/A')}")
-    lines.append(f"- Max full evals: {budget.get('max_full_evals', 'N/A')}")
+    lines.append(f"- Wall clock: {budget.get('wall_clock_hours', 'N/A')}h")
     lines.append("")
 
     phases = plan.get("phases", [])
@@ -278,8 +266,7 @@ def _generate_markdown(plan: dict) -> str:
         lines.append(f"- **Safety metrics:** {', '.join(phase.get('safety_metrics', []))}")
 
         budget = phase.get("budget", {})
-        lines.append(f"- **Budget:** max_candidates={budget.get('max_candidates', 'N/A')}, "
-                     f"max_full_evals={budget.get('max_full_evals', 'N/A')}")
+        lines.append(f"- **Budget:** wall_clock_hours={budget.get('wall_clock_hours', 'N/A')}h")
         lines.append("")
 
     return "\n".join(lines)

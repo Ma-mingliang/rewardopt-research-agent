@@ -16,8 +16,11 @@ _PRIORITY_ORDER = {"S": 0, "A": 1, "B": 2}
 class PaperSampler:
     """Manages iterative paper/method selection from the reward paper pool.
 
-    Picks 1-2 methods per round from the highest-priority untried category.
-    Tracks which methods have been tried via tried_methods.jsonl.
+    Category-based selection flow:
+    1. User selects relevant categories via set_active_categories()
+    2. Pick 2 methods from current category
+    3. After category exhausted, move to next category
+    4. Track improvement per category
     """
 
     def __init__(self, pool_dir: Path, work_dir: Path):
@@ -35,34 +38,115 @@ class PaperSampler:
         self._papers_by_id: dict[str, dict] = self._load_papers(pool_dir / "paper_pool.jsonl")
         self._tried_ids: set[str] = self._load_tried(work_dir / "logs" / "tried_methods.jsonl")
 
+        # Category-based selection state
+        self._active_categories: list[str] = []  # user-selected categories in priority order
+        self._current_cat_index: int = 0  # index into _active_categories
+        self._category_improvements: dict[str, list[float]] = {}  # cat_id -> list of scores
+
+    def set_active_categories(self, categories: list[str]):
+        """Set the active categories for optimization (user-confirmed).
+
+        Args:
+            categories: List of category IDs in priority order.
+        """
+        self._active_categories = list(categories)
+        self._current_cat_index = 0
+        print(f"[SAMPLER] Active categories: {categories}", flush=True)
+
+    def get_all_categories(self) -> list[dict]:
+        """Return all categories with their method counts (for user selection)."""
+        result = []
+        for cat_id in self._sorted_categories():
+            methods = self._methods_by_category.get(cat_id, [])
+            tried = sum(1 for m in methods if m.get("method_id") in self._tried_ids)
+            result.append({
+                "category": cat_id,
+                "total": len(methods),
+                "tried": tried,
+                "remaining": len(methods) - tried,
+                "priority": self._taxonomy.get(cat_id, {}).get("priority", "B"),
+                "description": self._taxonomy.get(cat_id, {}).get("description", ""),
+            })
+        return result
+
+    def record_category_result(self, category: str, score: float):
+        """Record the fair eval score for a category (for tracking improvement).
+
+        Args:
+            category: Category ID.
+            score: Composite score from fair eval (positive = improvement).
+        """
+        if category not in self._category_improvements:
+            self._category_improvements[category] = []
+        self._category_improvements[category].append(score)
+
     def get_next_batch(self, batch_size: int = 2) -> list[dict]:
-        """Pick next 1-2 methods from highest-priority untried category.
+        """Pick next batch from current active category.
 
         Selection logic:
-        - Sort categories by priority (S > A > B)
-        - Within each category, prefer methods with confidence "high" first
-        - Skip methods already in tried_methods
-        - Attach source_paper info from paper_pool
+        1. Pick from _active_categories[_current_cat_index]
+        2. If current category exhausted, move to next
+        3. If all categories exhausted, return empty
+
+        Args:
+            batch_size: Number of methods to pick.
 
         Returns:
-            List of method dicts (may be empty if all tried).
+            List of method dicts (empty if all exhausted).
         """
-        sorted_cats = self._sorted_categories()
-        batch: list[dict] = []
+        if not self._active_categories:
+            # Fallback: use all categories sorted by priority
+            return self._get_batch_from_all(batch_size)
 
-        for cat_id in sorted_cats:
+        while self._current_cat_index < len(self._active_categories):
+            cat_id = self._active_categories[self._current_cat_index]
             methods = self._methods_by_category.get(cat_id, [])
             untried = [m for m in methods if m.get("method_id") not in self._tried_ids]
-            # Sort by confidence: high > medium > low
             untried.sort(key=lambda m: {"high": 0, "medium": 1, "low": 2}.get(m.get("confidence", "low"), 2))
 
+            if untried:
+                batch = [self._enrich_with_paper(m) for m in untried[:batch_size]]
+                return batch
+            else:
+                # Current category exhausted, move to next
+                print(f"[SAMPLER] Category '{cat_id}' exhausted, moving to next.", flush=True)
+                self._current_cat_index += 1
+
+        return []  # All categories exhausted
+
+    def _get_batch_from_all(self, batch_size: int) -> list[dict]:
+        """Fallback: pick from all categories sorted by priority."""
+        for cat_id in self._sorted_categories():
+            methods = self._methods_by_category.get(cat_id, [])
+            untried = [m for m in methods if m.get("method_id") not in self._tried_ids]
+            untried.sort(key=lambda m: {"high": 0, "medium": 1, "low": 2}.get(m.get("confidence", "low"), 2))
+            batch = []
             for method in untried:
                 if len(batch) >= batch_size:
                     return batch
-                enriched = self._enrich_with_paper(method)
-                batch.append(enriched)
+                batch.append(self._enrich_with_paper(method))
+            if batch:
+                return batch
+        return []
 
-        return batch
+    def get_current_category(self) -> str | None:
+        """Return the currently active category, or None if exhausted."""
+        if self._active_categories and self._current_cat_index < len(self._active_categories):
+            return self._active_categories[self._current_cat_index]
+        return None
+
+    def get_category_improvements(self) -> dict[str, dict]:
+        """Return improvement stats per category."""
+        result = {}
+        for cat_id, scores in self._category_improvements.items():
+            if scores:
+                result[cat_id] = {
+                    "mean_score": sum(scores) / len(scores),
+                    "max_score": max(scores),
+                    "count": len(scores),
+                    "improved": sum(1 for s in scores if s > 0),
+                }
+        return result
 
     def mark_used(self, methods: list[dict], candidate_id: str = "", status: str = "tried",
                   phase_id: str = "", accepted: bool | None = None, reason: str = "",

@@ -21,6 +21,93 @@ class PatchManager:
         self._patches_dir = work_dir / "patches"
         self._patches_dir.mkdir(parents=True, exist_ok=True)
 
+    def _apply_direct_replacement(self, candidate) -> bool:
+        """Try to apply patch by direct file replacement.
+
+        Parses the diff to extract old and new code blocks,
+        then replaces them directly in the file using line numbers.
+
+        Returns True if successful, False if not applicable.
+        """
+        patch_diff = candidate.patch_diff
+        if not patch_diff:
+            return False
+
+        lines = patch_diff.split("\n")
+        if len(lines) < 4:
+            return False
+
+        # Parse header
+        from_file = None
+        for line in lines[:3]:
+            if line.startswith("--- a/"):
+                from_file = line[6:]
+                break
+
+        if not from_file:
+            return False
+
+        # Parse @@ header to get line numbers
+        start_line = None
+        old_count = None
+        new_count = None
+        for line in lines:
+            if line.startswith("@@"):
+                match = re.match(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@", line)
+                if match:
+                    start_line = int(match.group(1))
+                    old_count = int(match.group(2))
+                    new_count = int(match.group(4))
+                    break
+
+        if start_line is None:
+            return False
+
+        # Extract new code block (lines starting with + or context)
+        new_lines = []
+        in_diff = False
+        for line in lines:
+            if line.startswith("@@"):
+                in_diff = True
+                continue
+            if not in_diff:
+                continue
+            if line.startswith("+"):
+                new_lines.append(line[1:])
+            elif line.startswith(" ") or (line == "" and in_diff):
+                # Context line or empty line in diff
+                if line.startswith(" "):
+                    new_lines.append(line[1:])
+                else:
+                    new_lines.append("")
+
+        if not new_lines:
+            return False
+
+        # Read the target file
+        file_path = self.project_path / from_file
+        if not file_path.exists():
+            return False
+
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            file_lines = content.splitlines()
+
+            # Replace lines at the specified position
+            # start_line is 1-indexed
+            idx = start_line - 1
+            if idx < 0 or idx >= len(file_lines):
+                return False
+
+            # Replace old_count lines with new_lines
+            file_lines[idx:idx + old_count] = new_lines
+
+            new_content = "\n".join(file_lines)
+            file_path.write_text(new_content, encoding="utf-8")
+            return True
+        except OSError:
+            return False
+
     def apply_patch(self, candidate) -> dict:
         """Write patch_diff to disk and apply via git apply.
 
@@ -45,21 +132,28 @@ class PatchManager:
         patch_path = self._patches_dir / f"{candidate.candidate_id}.patch"
         patch_path.write_text(patch_diff, encoding="utf-8")
 
-        # Try git apply --check first
-        result = _run_git(self.project_path, ["apply", "--check", str(patch_path)])
+        # Try direct file replacement first (for our custom diff format)
+        if self._apply_direct_replacement(candidate):
+            return ok_response({
+                "applied": True,
+                "candidate_id": candidate.candidate_id,
+                "patch_path": str(patch_path),
+                "method": "direct_replacement",
+            })
+
+        # Fallback to git apply
+        result = _run_git(self.project_path, ["apply", "--check", "--whitespace=fix", str(patch_path)])
         if result.returncode != 0:
-            # Try with --3way fallback
-            result3 = _run_git(self.project_path, ["apply", "--3way", str(patch_path)])
+            result3 = _run_git(self.project_path, ["apply", "--3way", "--whitespace=fix", str(patch_path)])
             if result3.returncode != 0:
                 raise PatchApplyError(
                     str(patch_path),
                     result3.stderr or result.stderr or "git apply failed",
                 )
 
-        # Apply for real
-        result = _run_git(self.project_path, ["apply", str(patch_path)])
+        result = _run_git(self.project_path, ["apply", "--whitespace=fix", str(patch_path)])
         if result.returncode != 0:
-            result3 = _run_git(self.project_path, ["apply", "--3way", str(patch_path)])
+            result3 = _run_git(self.project_path, ["apply", "--3way", "--whitespace=fix", str(patch_path)])
             if result3.returncode != 0:
                 raise PatchApplyError(
                     str(patch_path),
@@ -173,7 +267,9 @@ class PatchManager:
         return ok_response({"valid": True, "files": files})
 
     def rollback_patch(self, candidate) -> dict:
-        """Rollback a patch by restoring the working tree.
+        """Rollback a patch by restoring modified files from backup.
+
+        Uses Python file operations instead of git to avoid Windows file locking issues.
 
         Args:
             candidate: Candidate object.
@@ -184,13 +280,25 @@ class PatchManager:
         Raises:
             PatchRollbackError: If rollback fails.
         """
-        # git checkout -- . restores the working tree to the last committed state
-        proc = _run_git(self.project_path, ["checkout", "--", "."])
-        if proc.returncode != 0:
-            raise PatchRollbackError(proc.stderr or "git checkout failed")
+        import shutil
 
-        # Also clean untracked files created by the patch
-        _run_git(self.project_path, ["clean", "-fd"])
+        # Extract modified files from the patch diff
+        modified_files = _extract_modified_files(candidate.patch_diff)
+
+        if modified_files:
+            for file_path in modified_files:
+                # Try to restore from baseline backup
+                backup_path = self.work_dir / "artifacts" / f"baseline_{file_path}"
+                if backup_path.exists():
+                    try:
+                        shutil.copy2(str(backup_path), str(self.project_path / file_path))
+                    except OSError as e:
+                        raise PatchRollbackError(f"Failed to restore {file_path}: {e}")
+                else:
+                    # Fallback: try git checkout
+                    proc = _run_git(self.project_path, ["checkout", "HEAD", "--", file_path])
+                    if proc.returncode != 0:
+                        raise PatchRollbackError(f"Failed to restore {file_path}: {proc.stderr}")
 
         return ok_response({
             "rolled_back": True,

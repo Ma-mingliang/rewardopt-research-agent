@@ -49,6 +49,77 @@ def _load_config_or_default(work_dir: Path) -> AgentConfig:
     return load_config(work_dir)
 
 
+def _generate_project_files(project_path: Path, work_dir: Path, config: AgentConfig) -> None:
+    """Generate train.py, evaluate.py, and README.md from templates.
+
+    Templates are in research_agent/templates/. Placeholders are replaced
+    with project-specific values. The generated files serve as starting
+    points that the user or agent can customize.
+    """
+    import shutil
+
+    template_dir = Path(__file__).parent.parent / "templates"
+    if not template_dir.exists():
+        print("[WARN] Templates directory not found, skipping file generation.", flush=True)
+        return
+
+    # Generate train.py from template
+    train_template = template_dir / "train_template.py"
+    train_output = work_dir / "train.py"
+    if train_template.exists() and not train_output.exists():
+        content = train_template.read_text(encoding="utf-8")
+        content = content.replace("{PROJECT_NAME}", project_path.name)
+        content = content.replace("{DEFAULT_TIMESTEPS}", str(config.execution.max_steps or 20000))
+        content = content.replace("{IMPORT_ENV}", "# TODO: import your environment module\n# Example: import env as env_module")
+        content = content.replace("{IMPORT_MODEL}", "# TODO: import your RL model\n# Example: from stable_baselines3 import TD3")
+        content = content.replace("{CREATE_ENV}", "# TODO: create your environment\n# Example: env = env_module.MyEnv(render=False)")
+        content = content.replace("{CREATE_MODEL}", "# TODO: create your model\n# Example: model = TD3('MlpPolicy', env=env)")
+        content = content.replace("{SET_CALLBACK_MODEL}", "callback.model = model  # TODO: set model reference for callback")
+        content = content.replace("{TRAIN_LOOP}", "# TODO: implement training loop\n# Example: model.learn(total_timesteps=timesteps)")
+        content = content.replace("{CLEANUP}", "# TODO: cleanup\n# Example: env.close()")
+        train_output.write_text(content, encoding="utf-8")
+        print(f"[INIT] Generated: {train_output}", flush=True)
+
+    # Generate evaluate.py from template
+    eval_template = template_dir / "evaluate_template.py"
+    eval_output = work_dir / "evaluate.py"
+    if eval_template.exists() and not eval_output.exists():
+        content = eval_template.read_text(encoding="utf-8")
+        content = content.replace("{PROJECT_NAME}", project_path.name)
+        content = content.replace("{IMPORT_ENV}", "# TODO: import your environment module")
+        content = content.replace("{IMPORT_MODEL}", "# TODO: import your RL model")
+        content = content.replace("{LOAD_MODEL}", "# TODO: load model from checkpoint\n# Example: return TD3.load(str(checkpoint_path))")
+        content = content.replace("{RUN_EPISODE}", "# TODO: run one episode\n# Example:\n#     obs, _ = env.reset()\n#     done, total_reward, steps = False, 0.0, 0\n#     while not done:\n#         action, _ = model.predict(obs, deterministic=True)\n#         obs, reward, terminated, truncated, _ = env.step(action)\n#         total_reward += reward\n#         steps += 1\n#         done = terminated or truncated\n#     return {'reward': total_reward, 'steps': steps, 'completed': steps >= max_steps}")
+        content = content.replace("{METRIC_COLLECTORS}", "# FILL: add project-specific metric collectors\n# Example: lateral_errors = []")
+        content = content.replace("{CREATE_EPISODE_ENV}", "# FILL: create environment\n# Example: env = env_module.MyEnv(render=False)")
+        content = content.replace("{COLLECT_METRICS}", "# FILL: collect project-specific metrics\n# Example: lateral_errors.append(ep_result.get('lateral_error', 0))")
+        content = content.replace("{AGGREGATE_METRICS}", "# FILL: aggregate project-specific metrics\n# Example: result['lateral_error'] = float(np.mean(lateral_errors))")
+        content = content.replace("{PRINT_METRICS}", "# FILL: print project-specific metrics\n# Example: print(f\"lateral_error = {metrics.get('lateral_error', 0):.4f}\")")
+        eval_output.write_text(content, encoding="utf-8")
+        print(f"[INIT] Generated: {eval_output}", flush=True)
+
+    # Generate README.md from template
+    readme_template = template_dir / "README_template.md"
+    readme_output = work_dir / "README.md"
+    if readme_template.exists() and not readme_output.exists():
+        content = readme_template.read_text(encoding="utf-8")
+        content = content.replace("{PROJECT_NAME}", project_path.name)
+        # Build metrics table
+        metrics_table = ""
+        for m in config.evaluation.metrics:
+            hard = ""
+            if m.hard_min is not None:
+                hard = f">= {m.hard_min}"
+            elif m.hard_max is not None:
+                hard = f"<= {m.hard_max}"
+            metrics_table += f"| {m.name} | {m.direction} | {m.weight} | {hard} |\n"
+        if not metrics_table:
+            metrics_table = "| (configured during init) | - | - | - |\n"
+        content = content.replace("{METRICS_TABLE}", metrics_table)
+        readme_output.write_text(content, encoding="utf-8")
+        print(f"[INIT] Generated: {readme_output}", flush=True)
+
+
 @click.group()
 @click.version_option(version="1.0.0")
 def main():
@@ -121,6 +192,7 @@ def init(project: str):
         "events.jsonl",
         "experiments.jsonl",
         "candidates.jsonl",
+        "tried_methods.jsonl",
         "paper_taxonomy.jsonl",
         "selected_reward_evidence.jsonl",
         "extracted_ideas.jsonl",
@@ -145,10 +217,16 @@ def init(project: str):
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(raw_config, f, default_flow_style=False, allow_unicode=True)
 
+    # Generate project-specific files from templates
+    _generate_project_files(project_path, work_dir, config)
+
     print_json(ok_response({
         "phase": "initialized",
         "work_dir": str(work_dir),
         "project_path": str(project_path),
+        "train_script": str(work_dir / "train.py"),
+        "evaluate_script": str(work_dir / "evaluate.py"),
+        "readme": str(work_dir / "README.md"),
         "next_action": "Call 'understand --project <path>' to analyze the project.",
     }))
 
@@ -524,14 +602,22 @@ def run_iteration_cmd(mock_llm: bool, json_output: bool):
         "full_evals_run": 0,
     })
 
-    # Execute single iteration (max_candidates=1)
+    # Execute single iteration
     phase_copy = dict(optimizer_phase)
-    phase_copy["budget"] = {**optimizer_phase.get("budget", {}), "max_candidates": 1}
 
     result = _execute_optimizer_phase(
         work_dir, config, phase_copy, project_path, resource_usage, batch,
-        mock_llm=mock_llm,
+        sampler=sampler, mock_llm=mock_llm,
     )
+
+    # Print version tracking summary
+    if not json_output:
+        print("\n" + "=" * 80, flush=True)
+        print("[ITERATION SUMMARY]", flush=True)
+        print(f"Methods used: {[m.get('method_id', '') for m in batch]}", flush=True)
+        print(f"Categories: {list({m.get('category', '') for m in batch})}", flush=True)
+        print(f"Phase result: {result.get('status', 'unknown')}", flush=True)
+        print("=" * 80 + "\n", flush=True)
 
     print_json(ok_response({
         "iteration_complete": True,

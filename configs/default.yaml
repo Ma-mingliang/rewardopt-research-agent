@@ -6,7 +6,7 @@ llm:
   timeout_seconds: 120
   max_retries: 3
   retry_delay_seconds: 5
-  max_tokens: 8192
+  max_tokens: 16384
   qps: 2.0
 
 project:
@@ -59,9 +59,6 @@ constraints:
 budget:
   wall_clock_hours: 336
   gpu_hours: null
-  max_candidates: null
-  max_full_evals: null
-  stop_when_budget_exhausted: true
 
 joint_validation:
   lqr_degradation_threshold: 0.90
@@ -72,14 +69,36 @@ metrics:
   primary: []
   safety: []
   diagnostic: []
-  metric_regex: {}
+  metric_regex:
+    completion_rate: "completion_rate = ([0-9.]+)"
+    reward: "reward = ([0-9.]+)"
+    lateral_error: "lateral_error = ([0-9.]+)"
   metric_thresholds:
     default_min_improvement_pct: 0.01
     default_max_regression_pct: 0.10
   safety_weights: {}
   cv_threshold: 0.3
   instability_weight: 0.5
-  screening_threshold: 0.0
+
+evaluation:
+  test_episodes: 30
+  checkpoint_dir: model/checkpoints
+  modifiable_files:
+    - env.py
+  metrics:
+    - name: completion_rate
+      direction: maximize
+      weight: 0.4
+      hard_min: 0.3
+    - name: reward
+      direction: maximize
+      weight: 0.4
+    - name: lateral_error
+      direction: minimize
+      weight: 0.2
+      hard_max: 50.0
+  composite_threshold: 0.0
+  llm_weight: 0.2
 
 literature:
   enabled: true
@@ -104,15 +123,10 @@ execution:
   train_command: ""
   eval_command: ""
   max_steps: 20000
-  screening_seeds:
-    - 42
   full_eval_seeds:
     - 42
-    - 123
-    - 456
   confirmation_seeds:
-    - 789
-    - 101112
+    - 42
   timeout_seconds_per_seed: 3600
 
 git:

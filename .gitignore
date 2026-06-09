@@ -40,3 +40,7 @@ test_project/
 # Coverage
 .coverage
 htmlcov/
+
+# Large files (papers)
+research_agent/reward_paper_pool/papers/
+HRRL2/

@@ -184,6 +184,10 @@ class LLMClient:
         if seed is not None:
             body["seed"] = seed
 
+        # MiMo compatibility: disable thinking mode to get responses in content field
+        if "mimo" in self._model.lower() or "xiaomimimo" in self._base_url.lower():
+            body["thinking"] = {"type": "disabled"}
+
         with httpx.Client(timeout=self._timeout) as client:
             resp = client.post(url, json=body, headers=headers)
             resp.raise_for_status()

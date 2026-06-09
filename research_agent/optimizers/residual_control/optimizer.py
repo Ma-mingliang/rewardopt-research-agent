@@ -54,7 +54,8 @@ class ResidualControlOptimizer(BaseOptimizer):
         Uses LLM to generate a patch for the residual policy component.
         Falls back to a no-op patch if LLM is unavailable.
         """
-        allowed = phase.get("allowed_changes", [])
+        from research_agent.optimizers.base import normalize_allowed_changes
+        allowed = normalize_allowed_changes(phase.get("allowed_changes", []))
         forbidden = phase.get("forbidden_changes", [])
 
         code = self._read_controller_code(allowed)
