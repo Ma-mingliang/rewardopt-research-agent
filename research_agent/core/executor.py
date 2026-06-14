@@ -824,7 +824,8 @@ def _execute_phase(
     try:
         if phase_id == "baseline":
             result = _execute_baseline(work_dir, config, phase, project_path,
-                                        execution_python=execution_python)
+                                        execution_python=execution_python,
+                                        observer=observer)
         elif phase_id == "joint-validation":
             result = _execute_joint_validation(work_dir, config, phase, project_path,
                                                 execution_python=execution_python)
@@ -855,6 +856,7 @@ def _execute_baseline(
     phase: dict,
     project_path: Path,
     execution_python: str | None = None,
+    observer: Any | None = None,
 ) -> dict:
     """Execute baseline phase: train + fair eval to establish baseline metrics."""
     seeds = config.execution.full_eval_seeds
@@ -876,7 +878,8 @@ def _execute_baseline(
             }
 
     eval_results = run_full_eval(project_path, config, seeds, work_dir, checkpoint_dir=checkpoint_dir,
-                                  python_executable=execution_python)
+                                  python_executable=execution_python,
+                                  observer=observer, candidate_id="baseline")
     failed = [r for r in eval_results if r.return_code != 0]
     if failed:
         return {
@@ -1557,6 +1560,89 @@ def _execute_optimizer_phase(
             continue
 
         # 5. Fair evaluation through configured eval_command.
+        # 5a. Preflight diagnostics
+        from research_agent.core.eval_diagnostics import (
+            EvalFailureType,
+            hash_file,
+            run_eval_preflight,
+        )
+        version_model = version_checkpoint_dir / "best_model.zip"
+        env_file = project_path / "env.py"
+        baseline_env_hash = hash_file(env_file)
+
+        if observer and observer.is_active:
+            observer.emit("full_eval_preflight_start",
+                          candidate_id=candidate.candidate_id)
+
+        preflight_ok, preflight_diag = run_eval_preflight(
+            execution_python=execution_python or "",
+            project_path=project_path,
+            eval_command=config.execution.eval_command or "",
+            env_file=env_file,
+            model_path=version_model if version_model.exists() else None,
+            output_dir=str(work_dir),
+        )
+
+        if observer and observer.is_active:
+            observer.emit("full_eval_preflight_end",
+                          candidate_id=candidate.candidate_id,
+                          preflight_ok=preflight_ok,
+                          failure_type=preflight_diag.failure_type.value
+                          if hasattr(preflight_diag.failure_type, 'value')
+                          else preflight_diag.failure_type)
+
+        if not preflight_ok:
+            # Preflight failed — skip full eval, return diagnostic
+            candidate.full_eval_result = {
+                "metrics": {},
+                "failed": True,
+                "failure_type": preflight_diag.failure_type.value
+                if hasattr(preflight_diag.failure_type, 'value')
+                else preflight_diag.failure_type,
+                "failure_stage": "preflight",
+                "diagnostic_summary": preflight_diag.diagnostic_summary,
+                "diagnostics": preflight_diag.to_dict(),
+                "seeds": config.execution.full_eval_seeds,
+            }
+            candidate.status = "rejected"
+            candidate.rejection_reason = preflight_diag.diagnostic_summary
+            if observer and observer.is_active:
+                observer.track_candidate("rejected",
+                                         rejection_reason=preflight_diag.failure_type.value
+                                         if hasattr(preflight_diag.failure_type, 'value')
+                                         else str(preflight_diag.failure_type))
+                observer.track_full_eval(failed=True,
+                                         failure_type=preflight_diag.failure_type.value
+                                         if hasattr(preflight_diag.failure_type, 'value')
+                                         else str(preflight_diag.failure_type))
+                observer.emit("full_eval_failed",
+                              candidate_id=candidate.candidate_id,
+                              failure_stage="preflight",
+                              failure_type=preflight_diag.failure_type.value
+                              if hasattr(preflight_diag.failure_type, 'value')
+                              else str(preflight_diag.failure_type))
+            optimizer._log_candidate(candidate)
+            _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
+            version_tracker.log_version(
+                version_id=version_id,
+                candidate_id=candidate.candidate_id,
+                reward_formula=reward_formula,
+                modified_files=modified_files,
+                metrics_before=baseline_metrics,
+                metrics_after=None,
+                accepted=False,
+                rejection_reason=candidate.rejection_reason,
+                source_methods=source_methods,
+                description=candidate.description,
+            )
+            candidate_results.append(candidate.to_dict())
+            try:
+                patch_manager.rollback_patch(candidate)
+            except Exception:
+                pass
+            continue
+
+        # 5b. Run full eval with diagnostics
         if observer and observer.is_active:
             observer.emit("candidate_eval_start",
                           candidate_id=candidate.candidate_id,
@@ -1569,51 +1655,85 @@ def _execute_optimizer_phase(
             work_dir,
             checkpoint_dir=version_checkpoint_dir,
             python_executable=execution_python,
+            observer=observer,
+            candidate_id=candidate.candidate_id,
         )
         if observer and observer.is_active:
             observer.emit("candidate_eval_end",
                           candidate_id=candidate.candidate_id,
                           results_count=len(eval_results),
                           any_failed=any(r.return_code != 0 for r in eval_results))
-        version_model = version_checkpoint_dir / "best_model.zip"
+
         eval_failed = any(r.return_code != 0 for r in eval_results)
         fair_metrics = aggregate_metrics(eval_results)
+
+        # Build diagnostics summary from per-seed results
+        seed_diagnostics = [r.diagnostics for r in eval_results if r.diagnostics]
+        # Use first seed's diagnostic as representative
+        primary_diag = seed_diagnostics[0] if seed_diagnostics else {}
+        failure_type_str = primary_diag.get("failure_type", "none") if primary_diag else "none"
+
+        # Determine repro_command from first failed seed
+        repro_cmd = ""
+        stdout_path_str = ""
+        stderr_path_str = ""
+        for r in eval_results:
+            if r.diagnostics:
+                if r.return_code != 0 or not r.metrics:
+                    repro_cmd = r.diagnostics.get("repro_command", "")
+                    stdout_path_str = r.diagnostics.get("stdout_path", "")
+                    stderr_path_str = r.diagnostics.get("stderr_path", "")
+                    break
+
+        # Build full_eval_result with diagnostics
         candidate.full_eval_result = {
             "metrics": fair_metrics,
             "failed": eval_failed or not bool(fair_metrics),
             "seeds": config.execution.full_eval_seeds,
+            "failure_type": failure_type_str if (eval_failed or not bool(fair_metrics)) else "none",
+            "failure_stage": "eval" if eval_failed else ("metrics_parse" if not fair_metrics else "none"),
+            "returncode": eval_results[0].return_code if eval_results else 0,
+            "stdout_path": stdout_path_str,
+            "stderr_path": stderr_path_str,
+            "stdout_tail": (eval_results[0].stdout[-1000:] if eval_results and eval_results[0].stdout else ""),
+            "stderr_tail": (eval_results[0].stderr[-1000:] if eval_results and eval_results[0].stderr else ""),
+            "resolved_command": primary_diag.get("resolved_command", "") if primary_diag else "",
+            "repro_command": repro_cmd,
+            "model_path": str(version_model),
+            "model_exists": version_model.exists(),
+            "eval_env_hash": hash_file(env_file),
+            "baseline_env_hash": baseline_env_hash,
+            "diagnostic_summary": primary_diag.get("diagnostic_summary", "") if primary_diag else "",
+            "diagnostics": primary_diag,
         }
+
         if eval_failed or not fair_metrics:
             candidate.status = "rejected"
             candidate.rejection_reason = "Full eval failed"
             if observer and observer.is_active:
                 rejection = "eval_failed" if eval_failed else "metrics_empty"
                 observer.track_candidate("rejected", rejection_reason=rejection)
+                observer.track_full_eval(
+                    failed=True,
+                    failure_type=failure_type_str,
+                    repro_command=repro_cmd,
+                    stdout_path=stdout_path_str,
+                    stderr_path=stderr_path_str,
+                )
                 observer.emit("candidate_rejected",
                               candidate_id=candidate.candidate_id,
                               rejection_reason=rejection,
                               eval_failed=eval_failed,
-                              metrics_empty=not bool(fair_metrics))
+                              metrics_empty=not bool(fair_metrics),
+                              failure_type=failure_type_str,
+                              repro_command=repro_cmd)
                 if not fair_metrics:
                     observer.track_metrics_empty()
-                    # Save stdout/stderr to files for debugging
-                    for i, r in enumerate(eval_results):
-                        if r.stdout:
-                            stdout_path = observer.run_dir / f"{candidate.candidate_id}_eval_{i}_stdout.txt"
-                            try:
-                                stdout_path.write_text(r.stdout[:10000], encoding="utf-8")
-                            except Exception:
-                                pass
-                        if r.stderr:
-                            stderr_path = observer.run_dir / f"{candidate.candidate_id}_eval_{i}_stderr.txt"
-                            try:
-                                stderr_path.write_text(r.stderr[:10000], encoding="utf-8")
-                            except Exception:
-                                pass
         else:
             candidate.status = "evaluated"
             if observer and observer.is_active:
                 observer.track_candidate("evaluated")
+                observer.track_full_eval(failed=False)
         optimizer._log_candidate(candidate)
 
         resource_usage["full_evals_run"] = resource_usage.get("full_evals_run", 0) + 1

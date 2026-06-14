@@ -69,6 +69,17 @@ class RunObserver:
         self._llm_calls_total = 0
         self._rejection_reasons: dict[str, int] = {}
 
+        # Full eval diagnostics counters
+        self._full_eval_total = 0
+        self._full_eval_failed = 0
+        self._full_eval_failure_types: dict[str, int] = {}
+        self._eval_timeout_count = 0
+        self._model_missing_count = 0
+        self._metrics_parse_failed_count = 0
+        self._last_failed_eval_repro_command: str | None = None
+        self._last_failed_eval_stdout_path: str | None = None
+        self._last_failed_eval_stderr_path: str | None = None
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -125,6 +136,34 @@ class RunObserver:
     def track_metrics_empty(self) -> None:
         self._metrics_empty_count += 1
 
+    def track_full_eval(
+        self,
+        failed: bool = False,
+        failure_type: str = "none",
+        repro_command: str = "",
+        stdout_path: str = "",
+        stderr_path: str = "",
+    ) -> None:
+        """Track a full eval run with diagnostics."""
+        self._full_eval_total += 1
+        if failed:
+            self._full_eval_failed += 1
+            self._full_eval_failure_types[failure_type] = (
+                self._full_eval_failure_types.get(failure_type, 0) + 1
+            )
+            if failure_type == "eval_timeout":
+                self._eval_timeout_count += 1
+            elif failure_type == "model_missing":
+                self._model_missing_count += 1
+            elif failure_type in ("metrics_parse_failed", "metrics_empty"):
+                self._metrics_parse_failed_count += 1
+            if repro_command:
+                self._last_failed_eval_repro_command = repro_command
+            if stdout_path:
+                self._last_failed_eval_stdout_path = stdout_path
+            if stderr_path:
+                self._last_failed_eval_stderr_path = stderr_path
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -171,6 +210,15 @@ class RunObserver:
             "metrics_empty_count": self._metrics_empty_count,
             "llm_calls_total": self._llm_calls_total,
             "rejection_reasons": self._rejection_reasons,
+            "full_eval_total": self._full_eval_total,
+            "full_eval_failed": self._full_eval_failed,
+            "full_eval_failure_types": self._full_eval_failure_types,
+            "eval_timeout_count": self._eval_timeout_count,
+            "model_missing_count": self._model_missing_count,
+            "metrics_parse_failed_count": self._metrics_parse_failed_count,
+            "last_failed_eval_repro_command": self._last_failed_eval_repro_command,
+            "last_failed_eval_stdout_path": self._last_failed_eval_stdout_path,
+            "last_failed_eval_stderr_path": self._last_failed_eval_stderr_path,
             "event_log": "events.jsonl",
         }
         if extra:

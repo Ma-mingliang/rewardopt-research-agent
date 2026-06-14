@@ -531,3 +531,51 @@ class TestCLIOptimizerOverride:
         assert "reward_langgraph" in names
         assert "reward" in names
         assert "hpo" in names
+
+
+# === Full eval diagnostics tests ===
+
+class TestFullEvalDiagnostics:
+    def test_full_eval_result_has_backward_compat_fields(self):
+        """full_eval_result always has metrics and failed fields."""
+        from research_agent.execution.experiment_runner import RunResult
+        r = RunResult(
+            command="python evaluate.py", return_code=0, stdout="done\n", stderr="",
+            duration_seconds=1.0, metrics={"reward": 100.0},
+            diagnostics={"failure_type": "none", "failed": False},
+        )
+        assert r.metrics == {"reward": 100.0}
+        assert r.return_code == 0
+        assert r.diagnostics is not None
+
+    def test_full_eval_result_diagnostics_on_failure(self):
+        """RunResult carries diagnostics when eval fails."""
+        from research_agent.execution.experiment_runner import RunResult
+        diag = {
+            "failure_type": "metrics_empty",
+            "failed": True,
+            "diagnostic_summary": "No metrics found",
+            "repro_command": "cd /d D:/project && python evaluate.py",
+        }
+        r = RunResult(
+            command="python evaluate.py", return_code=0, stdout="done\n", stderr="",
+            duration_seconds=1.0, metrics={},
+            diagnostics=diag,
+        )
+        assert r.diagnostics["failure_type"] == "metrics_empty"
+        assert r.diagnostics["repro_command"] != ""
+
+    def test_aggregate_metrics_still_works_with_diagnostics(self):
+        """aggregate_metrics ignores diagnostics field."""
+        from research_agent.execution.experiment_runner import RunResult, aggregate_metrics
+        results = [
+            RunResult(command="c", return_code=0, stdout="", stderr="",
+                      duration_seconds=1.0, metrics={"reward": 100.0},
+                      diagnostics={"failure_type": "none"}),
+            RunResult(command="c", return_code=0, stdout="", stderr="",
+                      duration_seconds=1.0, metrics={"reward": 200.0},
+                      diagnostics={"failure_type": "none"}),
+        ]
+        agg = aggregate_metrics(results)
+        assert "reward" in agg
+        assert agg["reward"]["mean"] == 150.0

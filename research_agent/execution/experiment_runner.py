@@ -22,6 +22,7 @@ class RunResult:
     duration_seconds: float
     metrics: dict[str, float | None] = field(default_factory=dict)
     timed_out: bool = False
+    diagnostics: dict[str, Any] | None = None
 
 
 def run_train(
@@ -77,6 +78,8 @@ def run_eval(
     extra_env: dict[str, str] | None = None,
     timeout_override: int | None = None,
     python_executable: str | None = None,
+    observer: Any | None = None,
+    candidate_id: str = "",
 ) -> RunResult:
     """Run evaluation command for a single seed and parse metrics.
 
@@ -87,18 +90,30 @@ def run_eval(
         work_dir: .research-agent work dir for artifact lookup.
         extra_env: Additional environment variables.
         timeout_override: Override timeout from config.
+        python_executable: Python executable for subprocess.
+        observer: Optional RunObserver for diagnostics.
+        candidate_id: Candidate ID for diagnostic file naming.
 
     Returns:
-        RunResult with parsed metrics.
+        RunResult with parsed metrics and diagnostics.
     """
     command = config.execution.eval_command
     if not command:
+        diag = _build_diagnostic(
+            candidate_id=candidate_id, stage="eval",
+            failure_type="subprocess_failed", failed=True,
+            returncode=1, command="(empty)", resolved_command="(empty)",
+            execution_python=python_executable or "",
+            cwd=str(project_path), error_message="eval_command is not configured",
+            diagnostic_summary="eval_command is not configured",
+        )
         return RunResult(
             command="(empty)",
             return_code=1,
             stdout="",
             stderr="eval_command is not configured",
             duration_seconds=0.0,
+            diagnostics=diag,
         )
 
     formatted_command = command.replace("{seed}", str(seed))
@@ -108,7 +123,77 @@ def run_eval(
                               python_executable=python_executable)
 
     # Parse metrics from output
-    metrics = parse_metrics(result.stdout, result.stderr, config, work_dir)
+    metrics_parser_ok = True
+    metrics_parser_error = ""
+    try:
+        metrics = parse_metrics(result.stdout, result.stderr, config, work_dir)
+    except Exception as e:
+        metrics_parser_ok = False
+        metrics_parser_error = str(e)[:500]
+        metrics = {}
+
+    # Build diagnostics
+    from research_agent.core.eval_diagnostics import EvalFailureType, classify_eval_failure
+    failure_type = classify_eval_failure(
+        returncode=result.return_code,
+        timed_out=result.timed_out,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        metrics=metrics,
+        metrics_parser_ok=metrics_parser_ok,
+        metrics_parser_error=metrics_parser_error,
+        execution_python_exists=bool(python_executable and Path(python_executable).exists()),
+    )
+
+    # Save stdout/stderr if observer available
+    stdout_path = ""
+    stderr_path = ""
+    if observer and observer.is_active and candidate_id:
+        run_dir = observer.run_dir
+        stdout_path = str(run_dir / f"{candidate_id}_eval_stdout.txt")
+        stderr_path = str(run_dir / f"{candidate_id}_eval_stderr.txt")
+        try:
+            if result.stdout:
+                Path(stdout_path).write_text(result.stdout[:50000], encoding="utf-8")
+            if result.stderr:
+                Path(stderr_path).write_text(result.stderr[:50000], encoding="utf-8")
+        except Exception:
+            pass
+
+    diag = _build_diagnostic(
+        candidate_id=candidate_id, stage="eval",
+        failure_type=failure_type.value,
+        failed=failure_type != EvalFailureType.NONE,
+        returncode=result.return_code,
+        command=command,
+        resolved_command=result.command,
+        execution_python=python_executable or "",
+        cwd=str(project_path),
+        duration_ms=int(result.duration_seconds * 1000),
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        stdout_tail=result.stdout[-1000:] if result.stdout else "",
+        stderr_tail=result.stderr[-1000:] if result.stderr else "",
+        metrics_keys=list(metrics.keys()),
+        metrics_empty=not bool(metrics),
+        metrics_parser_ok=metrics_parser_ok,
+        metrics_parser_error=metrics_parser_error,
+        env_path=str(project_path / "env.py"),
+        env_eval_hash="",  # computed by caller if needed
+        error_message=result.stderr[:500] if result.return_code != 0 else "",
+        diagnostic_summary=_summarize_failure(failure_type, result.return_code, metrics),
+    )
+
+    # Emit diagnostic events via observer
+    if observer and observer.is_active:
+        observer.emit("metrics_parse_end",
+                      candidate_id=candidate_id,
+                      metrics_parser_ok=metrics_parser_ok,
+                      metrics_keys=list(metrics.keys()),
+                      metrics_empty=not bool(metrics))
+        if failure_type == EvalFailureType.METRICS_EMPTY:
+            observer.emit("metrics_empty", candidate_id=candidate_id,
+                          stdout_path=stdout_path, stderr_path=stderr_path)
 
     return RunResult(
         command=result.command,
@@ -118,6 +203,7 @@ def run_eval(
         duration_seconds=result.duration_seconds,
         metrics=metrics,
         timed_out=result.timed_out,
+        diagnostics=diag,
     )
 
 
@@ -129,6 +215,8 @@ def run_full_eval(
     extra_env: dict[str, str] | None = None,
     checkpoint_dir: Path | None = None,
     python_executable: str | None = None,
+    observer: Any | None = None,
+    candidate_id: str = "",
 ) -> list[RunResult]:
     """Run evaluation across multiple seeds.
 
@@ -139,6 +227,9 @@ def run_full_eval(
         work_dir: .research-agent work dir for artifact lookup.
         extra_env: Additional environment variables.
         checkpoint_dir: Directory to save best model checkpoint.
+        python_executable: Python executable for subprocess.
+        observer: Optional RunObserver for diagnostics.
+        candidate_id: Candidate ID for diagnostic file naming.
 
     Returns:
         List of RunResult, one per seed.
@@ -154,7 +245,8 @@ def run_full_eval(
     results: list[RunResult] = []
     for seed in seeds:
         result = run_eval(project_path, config, seed, work_dir, env or None,
-                          python_executable=python_executable)
+                          python_executable=python_executable,
+                          observer=observer, candidate_id=candidate_id)
         results.append(result)
 
     return results
@@ -264,3 +356,95 @@ def _run_subprocess(
         duration_seconds=round(duration, 2),
         timed_out=timed_out,
     )
+
+
+def _build_diagnostic(
+    candidate_id: str = "",
+    stage: str = "eval",
+    failure_type: str = "none",
+    failed: bool = False,
+    returncode: int = 0,
+    command: str = "",
+    resolved_command: str = "",
+    execution_python: str = "",
+    cwd: str = "",
+    duration_ms: int = 0,
+    stdout_path: str = "",
+    stderr_path: str = "",
+    stdout_tail: str = "",
+    stderr_tail: str = "",
+    metrics_keys: list[str] | None = None,
+    metrics_empty: bool = False,
+    metrics_parser_ok: bool = True,
+    metrics_parser_error: str = "",
+    env_path: str = "",
+    env_eval_hash: str = "",
+    error_message: str = "",
+    diagnostic_summary: str = "",
+) -> dict[str, Any]:
+    """Build a diagnostic dict for a single eval run."""
+    from research_agent.core.eval_diagnostics import build_repro_command, hash_file
+
+    repro = build_repro_command(
+        execution_python=execution_python,
+        eval_command=command,
+        cwd=cwd,
+        candidate_id=candidate_id,
+    )
+
+    env_hash = env_eval_hash or hash_file(env_path) if env_path else ""
+
+    return {
+        "candidate_id": candidate_id,
+        "stage": stage,
+        "failure_type": failure_type,
+        "failed": failed,
+        "returncode": returncode,
+        "command": command,
+        "resolved_command": resolved_command,
+        "repro_command": repro,
+        "execution_python": execution_python,
+        "cwd": cwd,
+        "duration_ms": duration_ms,
+        "stdout_path": stdout_path,
+        "stderr_path": stderr_path,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+        "metrics_keys": metrics_keys or [],
+        "metrics_empty": metrics_empty,
+        "metrics_parser_ok": metrics_parser_ok,
+        "metrics_parser_error": metrics_parser_error,
+        "env_path": env_path,
+        "env_hash": env_hash,
+        "error_message": error_message,
+        "diagnostic_summary": diagnostic_summary,
+    }
+
+
+def _summarize_failure(failure_type, returncode: int, metrics: dict) -> str:
+    """Generate a human-readable summary of the failure."""
+    from research_agent.core.eval_diagnostics import EvalFailureType
+
+    if failure_type == EvalFailureType.NONE:
+        return "Evaluation completed successfully"
+    if failure_type == EvalFailureType.METRICS_EMPTY:
+        return "evaluate.py completed (returncode=0) but no parseable metrics were found in stdout"
+    if failure_type == EvalFailureType.METRICS_PARSE_FAILED:
+        return "Metrics parser threw an exception while processing eval output"
+    if failure_type == EvalFailureType.METRICS_FILE_MISSING:
+        return "Metrics output file was not created by evaluate.py"
+    if failure_type == EvalFailureType.EVAL_SCRIPT_CRASHED:
+        return f"evaluate.py crashed with returncode={returncode}"
+    if failure_type == EvalFailureType.EVAL_TIMEOUT:
+        return "evaluate.py timed out"
+    if failure_type == EvalFailureType.MODEL_MISSING:
+        return "Model file does not exist at expected path"
+    if failure_type == EvalFailureType.MODEL_LOAD_FAILED:
+        return "Model file exists but could not be loaded"
+    if failure_type == EvalFailureType.ENV_IMPORT_FAILED:
+        return "env.py could not be imported or compiled"
+    if failure_type == EvalFailureType.EXECUTION_PYTHON_MISSING:
+        return "execution_python executable does not exist"
+    if failure_type == EvalFailureType.SUBPROCESS_FAILED:
+        return f"Subprocess failed with returncode={returncode}"
+    return f"Unknown failure type: {failure_type}"

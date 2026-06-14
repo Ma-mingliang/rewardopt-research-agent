@@ -168,3 +168,79 @@ class TestRunObserver:
         import re
         pattern = r"^\d{8}_\d{6}_test_optimizer_[a-f0-9]{6}$"
         assert re.match(pattern, observer.run_id), f"run_id '{observer.run_id}' doesn't match pattern"
+
+    def test_track_full_eval_success(self, observer):
+        """track_full_eval increments total but not failed on success."""
+        observer.track_full_eval(failed=False)
+        observer.track_full_eval(failed=False)
+        assert observer._full_eval_total == 2
+        assert observer._full_eval_failed == 0
+
+    def test_track_full_eval_failure(self, observer):
+        """track_full_eval increments failure counters."""
+        observer.track_full_eval(failed=True, failure_type="metrics_empty")
+        observer.track_full_eval(failed=True, failure_type="eval_script_crashed")
+        observer.track_full_eval(failed=True, failure_type="metrics_empty")
+        assert observer._full_eval_total == 3
+        assert observer._full_eval_failed == 3
+        assert observer._full_eval_failure_types["metrics_empty"] == 2
+        assert observer._full_eval_failure_types["eval_script_crashed"] == 1
+
+    def test_track_full_eval_timeout(self, observer):
+        """eval_timeout increments timeout counter."""
+        observer.track_full_eval(failed=True, failure_type="eval_timeout")
+        assert observer._eval_timeout_count == 1
+
+    def test_track_full_eval_model_missing(self, observer):
+        """model_missing increments model_missing counter."""
+        observer.track_full_eval(failed=True, failure_type="model_missing")
+        assert observer._model_missing_count == 1
+
+    def test_track_full_eval_metrics_parse_failed(self, observer):
+        """metrics_parse_failed increments parse failed counter."""
+        observer.track_full_eval(failed=True, failure_type="metrics_parse_failed")
+        assert observer._metrics_parse_failed_count == 1
+
+    def test_track_full_eval_stores_repro_command(self, observer):
+        """Last failed eval repro command is stored."""
+        observer.track_full_eval(
+            failed=True, failure_type="metrics_empty",
+            repro_command="cd /d D:/project && python evaluate.py",
+        )
+        assert observer._last_failed_eval_repro_command == "cd /d D:/project && python evaluate.py"
+
+    def test_write_summary_includes_full_eval_fields(self, observer):
+        """summary.json includes full eval diagnostic fields."""
+        observer.track_full_eval(failed=True, failure_type="metrics_empty",
+                                 repro_command="test_cmd")
+        observer.write_summary()
+        summary = json.loads(observer.summary_path.read_text(encoding="utf-8"))
+        assert summary["full_eval_total"] == 1
+        assert summary["full_eval_failed"] == 1
+        assert summary["full_eval_failure_types"]["metrics_empty"] == 1
+        assert summary["eval_timeout_count"] == 0
+        assert summary["model_missing_count"] == 0
+        assert summary["metrics_parse_failed_count"] == 1
+        assert summary["last_failed_eval_repro_command"] == "test_cmd"
+
+    def test_write_summary_full_eval_defaults_zero(self, observer):
+        """summary.json has zero defaults when no full evals run."""
+        observer.write_summary()
+        summary = json.loads(observer.summary_path.read_text(encoding="utf-8"))
+        assert summary["full_eval_total"] == 0
+        assert summary["full_eval_failed"] == 0
+        assert summary["full_eval_failure_types"] == {}
+        assert summary["last_failed_eval_repro_command"] is None
+
+    def test_emit_full_eval_events(self, observer):
+        """Can emit full_eval_preflight/failed events."""
+        observer.emit("full_eval_preflight_start", candidate_id="c001")
+        observer.emit("full_eval_preflight_end", candidate_id="c001", preflight_ok=False)
+        observer.emit("full_eval_failed", candidate_id="c001", failure_type="model_missing")
+        lines = observer.events_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 3
+        r0 = json.loads(lines[0])
+        assert r0["event_type"] == "full_eval_preflight_start"
+        r2 = json.loads(lines[2])
+        assert r2["event_type"] == "full_eval_failed"
+        assert r2["failure_type"] == "model_missing"
