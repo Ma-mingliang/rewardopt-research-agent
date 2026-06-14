@@ -29,6 +29,7 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         project_path: Path,
         mock_llm: bool = False,
         execution_python: str | None = None,
+        observer=None,
     ):
         super().__init__(work_dir, config, project_path, mock_llm, execution_python)
         self._execution_env: ExecutionEnv = resolve_execution_env(
@@ -38,6 +39,7 @@ class LangGraphRewardOptimizer(BaseOptimizer):
             work_dir=work_dir,
         )
         self._graph = None
+        self._observer = observer
 
     @property
     def graph(self):
@@ -79,6 +81,12 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         source_meta = build_source_meta(ideas or [])
 
         if self._mock_llm:
+            if self._observer and self._observer.is_active:
+                self._observer.emit("propose_candidate",
+                                    candidate_id=candidate_id,
+                                    status="noop",
+                                    reason="mock_llm",
+                                    node="propose")
             return Candidate(
                 candidate_id=candidate_id,
                 optimizer=self.name,
@@ -106,6 +114,7 @@ class LangGraphRewardOptimizer(BaseOptimizer):
                 "configurable": {
                     "optimizer": self,
                     "execution_env": self._execution_env,
+                    "observer": self._observer,
                 },
             },
         )

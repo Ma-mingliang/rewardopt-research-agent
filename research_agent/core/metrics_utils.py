@@ -9,6 +9,37 @@ from __future__ import annotations
 from typing import Any
 
 
+def get_eval_metric_defs(config) -> list:
+    """Return list of metric definitions from config.
+
+    Returns objects with .name, .direction, .hard_min attributes.
+    """
+    eval_cfg = getattr(config, "evaluation", None)
+    if eval_cfg is None:
+        return []
+    metrics = getattr(eval_cfg, "metrics", [])
+    if metrics:
+        return metrics
+    # Fallback: build from config.metrics.primary
+    metrics_cfg = getattr(config, "metrics", None)
+    if metrics_cfg is None:
+        return []
+    primary = getattr(metrics_cfg, "primary", [])
+    result = []
+    for m in primary:
+        if isinstance(m, dict):
+            # Create a simple namespace object
+            class _Metric:
+                pass
+            obj = _Metric()
+            obj.name = m.get("name", "")
+            obj.direction = m.get("direction", "maximize")
+            obj.hard_min = m.get("hard_min")
+            obj.weight = m.get("weight", 0.0)
+            result.append(obj)
+    return result
+
+
 def flatten_metrics(metrics: dict[str, Any]) -> dict[str, float]:
     """Convert nested metrics to flat format.
 

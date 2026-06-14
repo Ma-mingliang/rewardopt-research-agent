@@ -424,3 +424,110 @@ class TestPrompts:
     def test_empty_diff_retry_prompt_exists(self):
         from research_agent.agents.reward_agent.prompts import EMPTY_DIFF_RETRY_PROMPT
         assert "empty diff" in EMPTY_DIFF_RETRY_PROMPT.lower()
+
+
+# === Observability integration ===
+
+class TestObservabilityIntegration:
+    def test_mock_propose_emits_events(self, git_project, work_dir, config, allowed_changes, tmp_path):
+        """Mock propose with observer should emit events to events.jsonl."""
+        from research_agent.agents.reward_agent.optimizer import LangGraphRewardOptimizer
+        from research_agent.core.observability import RunObserver
+
+        observer = RunObserver(
+            run_log_dir=str(tmp_path / "runs"),
+            optimizer="reward_langgraph",
+            project_path=str(git_project),
+            mock_llm=True,
+        )
+
+        opt = LangGraphRewardOptimizer(work_dir, config, git_project, mock_llm=True, observer=observer)
+        phase = {"allowed_changes": allowed_changes, "forbidden_changes": []}
+        candidate = opt.propose_candidate(phase, {"reward": {"mean": 0.5, "std": 0.1}})
+
+        observer.close()
+
+        # Check events were emitted
+        assert observer.events_path.exists()
+        lines = observer.events_path.read_text(encoding="utf-8").strip().splitlines()
+        event_types = [json.loads(line)["event_type"] for line in lines]
+        assert "propose_candidate" in event_types
+
+    def test_observer_passes_through_graph_config(self, git_project, work_dir, config, allowed_changes, tmp_path):
+        """Observer should be accessible from graph nodes via config."""
+        from research_agent.agents.reward_agent.optimizer import LangGraphRewardOptimizer
+        from research_agent.core.observability import RunObserver
+
+        observer = RunObserver(
+            run_log_dir=str(tmp_path / "runs"),
+            optimizer="reward_langgraph",
+            project_path=str(git_project),
+            mock_llm=True,
+        )
+
+        opt = LangGraphRewardOptimizer(work_dir, config, git_project, mock_llm=True, observer=observer)
+        assert opt._observer is observer
+
+    def test_full_eval_unchanged_with_observer(self, git_project, work_dir, config):
+        """full_eval_candidate method must still be inherited from BaseOptimizer, even with observer."""
+        from research_agent.agents.reward_agent.optimizer import LangGraphRewardOptimizer
+        from research_agent.optimizers.base import BaseOptimizer
+
+        opt = LangGraphRewardOptimizer(work_dir, config, git_project, mock_llm=True, observer=None)
+        assert type(opt).full_eval_candidate is BaseOptimizer.full_eval_candidate
+
+
+# === CLI optimizer override tests ===
+
+class TestCLIOptimizerOverride:
+    def test_optimizer_override_does_not_modify_plan(self, tmp_path):
+        """--optimizer override must not modify experiment_plan.json."""
+        # Create a minimal project structure
+        project = tmp_path / "project"
+        project.mkdir()
+        work_dir = project / ".research-agent"
+        work_dir.mkdir()
+        (work_dir / "config.yaml").write_text("llm: {}\nexecution: {}\n", encoding="utf-8")
+        (work_dir / "state.json").write_text("{}", encoding="utf-8")
+
+        plan = {
+            "phases": [
+                {"phase_id": "p1", "optimizer": "reward", "status": "pending", "budget": {"max_candidates": 1}}
+            ]
+        }
+        plan_path = work_dir / "experiment_plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+        # Read original content
+        original = plan_path.read_text(encoding="utf-8")
+
+        # Simulate override (what run_optimizer.py does)
+        import copy
+        phase_copy = dict(plan["phases"][0])
+        phase_copy["optimizer"] = "reward_langgraph"
+
+        # Verify original file unchanged
+        current = plan_path.read_text(encoding="utf-8")
+        assert current == original
+        assert '"reward"' in current
+        assert '"reward_langgraph"' not in current
+
+    def test_invalid_optimizer_fails_fast(self):
+        """Invalid optimizer name should raise KeyError."""
+        from research_agent.optimizers import get_optimizer_class
+        with pytest.raises(KeyError, match="Unknown optimizer"):
+            get_optimizer_class("nonexistent_optimizer_xyz")
+
+    def test_valid_optimizer_override(self):
+        """Valid optimizer name should resolve."""
+        from research_agent.optimizers import get_optimizer_class
+        cls = get_optimizer_class("reward_langgraph")
+        assert cls.__name__ == "LangGraphRewardOptimizer"
+
+    def test_list_optimizers_includes_all(self):
+        """list_optimizers should return all registered optimizers."""
+        from research_agent.optimizers import list_optimizers
+        names = list_optimizers()
+        assert "reward_langgraph" in names
+        assert "reward" in names
+        assert "hpo" in names

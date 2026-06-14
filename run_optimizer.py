@@ -23,7 +23,17 @@ from research_agent.core.version_tracker import VersionTracker
 @click.option("--mock-llm", is_flag=True, help="Skip LLM calls")
 @click.option("--batch-size", default=2, type=int, help="Methods per batch")
 @click.option("--execution-python", default=None, type=str, help="Python executable for project code execution")
-def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: int, execution_python: str | None):
+@click.option("--optimizer", default=None, type=str, help="Override optimizer (e.g. reward_langgraph)")
+@click.option("--run-log-dir", default=None, type=str, help="Directory for run logs (default: .research-agent/runs)")
+def main(
+    project: str,
+    max_iterations: int | None,
+    mock_llm: bool,
+    batch_size: int,
+    execution_python: str | None,
+    optimizer: str | None,
+    run_log_dir: str | None,
+):
     """Run optimizer with version tracking.
 
     Each candidate version is logged to:
@@ -41,6 +51,38 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
     config = load_config(work_dir)
     state = read_state_json(work_dir)
 
+    # Validate --optimizer override if provided
+    if optimizer is not None:
+        from research_agent.optimizers import get_optimizer_class
+        try:
+            get_optimizer_class(optimizer)
+        except KeyError:
+            available = ", ".join(sorted(__import__("research_agent.optimizers", fromlist=["list_optimizers"]).list_optimizers()))
+            print(f"[ERROR] Unknown optimizer: '{optimizer}'", flush=True)
+            print(f"Available optimizers: {available}", flush=True)
+            sys.exit(1)
+
+    # Resolve run log directory
+    if run_log_dir is None:
+        run_log_dir_path = work_dir / "runs"
+    else:
+        run_log_dir_path = Path(run_log_dir).resolve()
+    run_log_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Create RunObserver
+    from research_agent.core.observability import RunObserver
+    observer = RunObserver(
+        run_log_dir=str(run_log_dir_path),
+        optimizer=optimizer or "auto",
+        project_path=str(project_path),
+        agent_python=sys.executable,
+        execution_python=execution_python or "",
+        fallback_used=execution_python is None,
+        mock_llm=mock_llm,
+        max_iterations=max_iterations,
+        batch_size=batch_size,
+    )
+
     print("=" * 80, flush=True)
     print("[OPTIMIZER START]", flush=True)
     print(f"Project: {project_path}", flush=True)
@@ -49,8 +91,13 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
     print(f"Max iterations: {max_iterations or 'unlimited'}", flush=True)
     print(f"Batch size: {batch_size}", flush=True)
     print(f"Execution Python: {execution_python or '(fallback to sys.executable)'}", flush=True)
+    print(f"Optimizer override: {optimizer or '(from experiment_plan.json)'}", flush=True)
+    print(f"Run ID: {observer.run_id}", flush=True)
+    print(f"Run log dir: {observer.run_dir}", flush=True)
     print("=" * 80 + "\n", flush=True)
     print("Note: configuration confirmation will happen inside optimizer phase.", flush=True)
+
+    observer.emit("run_start", phase="main")
 
     # Initialize sampler
     sampler = _init_sampler(work_dir)
@@ -73,7 +120,17 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
 
     if optimizer_phase is None:
         print("[INFO] No pending optimizer phases.", flush=True)
+        observer.emit("run_end", phase="main", status="no_pending_phases")
+        observer.close()
         return
+
+    # Override optimizer from CLI if provided
+    if optimizer is not None:
+        original_optimizer = optimizer_phase.get("optimizer", "unknown")
+        optimizer_phase = dict(optimizer_phase)
+        optimizer_phase["optimizer"] = optimizer
+        print(f"[CLI] Optimizer override: {original_optimizer} -> {optimizer}", flush=True)
+        observer.emit("optimizer_override", original=original_optimizer, override=optimizer)
 
     resource_usage = state.get("resource_usage", {
         "wall_clock_seconds": 0,
@@ -127,10 +184,12 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
             pass
 
         try:
+            observer.emit("iteration_start", iteration=iteration, phase=phase_copy.get("phase_id", "unknown"))
             result = _execute_optimizer_phase(
                 work_dir, config, phase_copy, project_path, resource_usage, batch,
                 sampler=sampler, mock_llm=mock_llm,
                 execution_python=execution_python,
+                observer=observer,
             )
         except Exception as e:
             print(f"[ERROR] Iteration failed: {e}", flush=True)
@@ -158,6 +217,9 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
         print(f"\n[RESULT] Iteration {iteration} completed", flush=True)
         print(f"Status: {result.get('status', 'unknown')}", flush=True)
         print(f"Candidates evaluated: {result.get('candidates_evaluated', 0)}", flush=True)
+
+        observer.emit("iteration_end", iteration=iteration, status=result.get("status", "unknown"),
+                       candidates_evaluated=result.get("candidates_evaluated", 0))
 
         best = result.get("best_candidate")
         if best:
@@ -197,7 +259,13 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
     print(f"Total full evals: {resource_usage.get('full_evals_run', 0)}", flush=True)
     print(f"Changelog: {work_dir / 'CHANGELOG.md'}", flush=True)
     print(f"Tried methods: {work_dir / 'logs' / 'tried_methods.jsonl'}", flush=True)
+    print(f"Run log: {observer.run_dir}", flush=True)
     print("=" * 80, flush=True)
+
+    observer.emit("run_end", phase="main", total_iterations=iteration,
+                   total_candidates=resource_usage.get("candidates_proposed", 0))
+    observer.close()
+    print(f"[OBSERVER] Summary written to: {observer.summary_path}", flush=True)
 
 
 if __name__ == "__main__":

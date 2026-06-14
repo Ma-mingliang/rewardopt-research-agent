@@ -1036,6 +1036,7 @@ def _execute_optimizer_phase(
     sampler=None,
     mock_llm: bool = False,
     execution_python: str | None = None,
+    observer=None,
 ) -> dict:
     """Execute an optimizer phase with full propose→apply→eval→accept→rollback cycle.
 
@@ -1076,11 +1077,12 @@ def _execute_optimizer_phase(
 
     import inspect
     sig = inspect.signature(opt_cls.__init__)
+    init_kwargs = {"mock_llm": mock_llm}
     if "execution_python" in sig.parameters:
-        optimizer = opt_cls(work_dir, config, project_path, mock_llm=mock_llm,
-                            execution_python=execution_python)
-    else:
-        optimizer = opt_cls(work_dir, config, project_path, mock_llm=mock_llm)
+        init_kwargs["execution_python"] = execution_python
+    if "observer" in sig.parameters:
+        init_kwargs["observer"] = observer
+    optimizer = opt_cls(work_dir, config, project_path, **init_kwargs)
     patch_manager = PatchManager(project_path, work_dir)
 
     # Pre-run confirmation: show config and ask user to confirm
@@ -1237,6 +1239,12 @@ def _execute_optimizer_phase(
         candidate = optimizer.propose_candidate(phase, baseline_metrics, candidate_ideas)
         resource_usage["candidates_proposed"] = resource_usage.get("candidates_proposed", 0) + 1
 
+        if observer and observer.is_active:
+            observer.emit("candidate_created",
+                          candidate_id=candidate.candidate_id,
+                          optimizer=optimizer_name,
+                          has_diff=bool(candidate.patch_diff and candidate.patch_diff.strip()))
+
         # Extract version tracking info
         modified_files = extract_modified_files(candidate)
         reward_formula = extract_reward_formula(candidate, candidate_ideas)
@@ -1260,6 +1268,11 @@ def _execute_optimizer_phase(
             candidate.status = "rejected"
             candidate.rejection_reason = "empty patch rejected before training"
             optimizer._log_candidate(candidate)
+            if observer and observer.is_active:
+                observer.track_candidate("rejected", rejection_reason="empty_patch")
+                observer.emit("candidate_rejected",
+                              candidate_id=candidate.candidate_id,
+                              rejection_reason="empty_patch")
             _mark_batch("noop", reason=candidate.rejection_reason)
 
             # Log version with rejection
@@ -1439,6 +1452,11 @@ def _execute_optimizer_phase(
 
         for seed in seeds:
             print(f"[TRAIN] seed={seed}, timesteps={config.execution.max_steps}", flush=True)
+            if observer and observer.is_active:
+                observer.emit("candidate_train_start",
+                              candidate_id=candidate.candidate_id,
+                              seed=seed,
+                              command=config.execution.train_command)
             train_result = run_train(project_path, config, seed, checkpoint_dir=version_checkpoint_dir,
                                      python_executable=execution_python)
 
@@ -1493,12 +1511,24 @@ def _execute_optimizer_phase(
                     training_failed = True
             else:
                 print(f"[TRAIN] seed={seed} done in {train_result.duration_seconds}s", flush=True)
+                if observer and observer.is_active:
+                    observer.emit("candidate_train_end",
+                                  candidate_id=candidate.candidate_id,
+                                  seed=seed,
+                                  return_code=train_result.return_code,
+                                  duration_ms=int(train_result.duration_seconds * 1000),
+                                  timed_out=train_result.timed_out)
 
         # If all training attempts failed, reject the candidate
         if training_failed:
             candidate.status = "rejected"
             candidate.rejection_reason = "Training failed"
             optimizer._log_candidate(candidate)
+            if observer and observer.is_active:
+                observer.track_candidate("rejected", rejection_reason="train_failed")
+                observer.emit("candidate_rejected",
+                              candidate_id=candidate.candidate_id,
+                              rejection_reason="train_failed")
             _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
             version_tracker.log_version(
                 version_id=version_id,
@@ -1527,6 +1557,11 @@ def _execute_optimizer_phase(
             continue
 
         # 5. Fair evaluation through configured eval_command.
+        if observer and observer.is_active:
+            observer.emit("candidate_eval_start",
+                          candidate_id=candidate.candidate_id,
+                          seeds=config.execution.full_eval_seeds,
+                          command=config.execution.eval_command)
         eval_results = run_full_eval(
             project_path,
             config,
@@ -1535,6 +1570,11 @@ def _execute_optimizer_phase(
             checkpoint_dir=version_checkpoint_dir,
             python_executable=execution_python,
         )
+        if observer and observer.is_active:
+            observer.emit("candidate_eval_end",
+                          candidate_id=candidate.candidate_id,
+                          results_count=len(eval_results),
+                          any_failed=any(r.return_code != 0 for r in eval_results))
         version_model = version_checkpoint_dir / "best_model.zip"
         eval_failed = any(r.return_code != 0 for r in eval_results)
         fair_metrics = aggregate_metrics(eval_results)
@@ -1546,8 +1586,34 @@ def _execute_optimizer_phase(
         if eval_failed or not fair_metrics:
             candidate.status = "rejected"
             candidate.rejection_reason = "Full eval failed"
+            if observer and observer.is_active:
+                rejection = "eval_failed" if eval_failed else "metrics_empty"
+                observer.track_candidate("rejected", rejection_reason=rejection)
+                observer.emit("candidate_rejected",
+                              candidate_id=candidate.candidate_id,
+                              rejection_reason=rejection,
+                              eval_failed=eval_failed,
+                              metrics_empty=not bool(fair_metrics))
+                if not fair_metrics:
+                    observer.track_metrics_empty()
+                    # Save stdout/stderr to files for debugging
+                    for i, r in enumerate(eval_results):
+                        if r.stdout:
+                            stdout_path = observer.run_dir / f"{candidate.candidate_id}_eval_{i}_stdout.txt"
+                            try:
+                                stdout_path.write_text(r.stdout[:10000], encoding="utf-8")
+                            except Exception:
+                                pass
+                        if r.stderr:
+                            stderr_path = observer.run_dir / f"{candidate.candidate_id}_eval_{i}_stderr.txt"
+                            try:
+                                stderr_path.write_text(r.stderr[:10000], encoding="utf-8")
+                            except Exception:
+                                pass
         else:
             candidate.status = "evaluated"
+            if observer and observer.is_active:
+                observer.track_candidate("evaluated")
         optimizer._log_candidate(candidate)
 
         resource_usage["full_evals_run"] = resource_usage.get("full_evals_run", 0) + 1
@@ -1609,10 +1675,20 @@ def _execute_optimizer_phase(
             state["current_best"] = candidate.to_dict()
             _mark_batch("accepted", accepted=True)
             print(f"[ACCEPTED] {version_id}: current best updated", flush=True)
+            if observer and observer.is_active:
+                observer.emit("candidate_accepted",
+                              candidate_id=candidate.candidate_id,
+                              score=decision["final_score"],
+                              fair_metrics=fair_metrics)
         else:
             # REJECTED: keep checkpoint for reference
             _mark_batch("rejected", accepted=False, reason=decision["reason"])
             print(f"[REJECTED] {version_id}: checkpoint kept for reference", flush=True)
+            if observer and observer.is_active:
+                observer.emit("candidate_rejected",
+                              candidate_id=candidate.candidate_id,
+                              rejection_reason=decision["reason"],
+                              score=decision["final_score"])
 
         # 10. Independent strategy: rollback env.py to baseline after each candidate
         # This ensures the next candidate starts from a clean baseline
