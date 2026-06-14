@@ -394,12 +394,13 @@ class TestOptimizerRegistry:
         from research_agent.optimizers import list_optimizers
         names = list_optimizers()
         assert "reward" in names
+        assert "reward_langgraph" in names
         assert "residual_control" in names
         assert "hpo" in names
         assert "curriculum" in names
         assert "observation" in names
         assert "action_space" in names
-        assert len(names) == 6
+        assert len(names) == 7
 
     def test_get_optimizer_class(self):
         from research_agent.optimizers import get_optimizer_class

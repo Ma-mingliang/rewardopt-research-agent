@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 # Lazy registry: maps optimizer name to (module_path, class_name)
 _OPTIMIZER_MODULES: dict[str, tuple[str, str]] = {
     "reward": ("research_agent.optimizers.reward.optimizer", "RewardOptimizer"),
+    "reward_langgraph": ("research_agent.agents.reward_agent.optimizer", "LangGraphRewardOptimizer"),
     "residual_control": ("research_agent.optimizers.residual_control.optimizer", "ResidualControlOptimizer"),
     "hpo": ("research_agent.optimizers.hpo.optimizer", "HPOOptimizer"),
     "curriculum": ("research_agent.optimizers.curriculum.optimizer", "CurriculumOptimizer"),

@@ -22,7 +22,8 @@ from research_agent.core.version_tracker import VersionTracker
 @click.option("--max-iterations", default=None, type=int, help="Max iterations to run")
 @click.option("--mock-llm", is_flag=True, help="Skip LLM calls")
 @click.option("--batch-size", default=2, type=int, help="Methods per batch")
-def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: int):
+@click.option("--execution-python", default=None, type=str, help="Python executable for project code execution")
+def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: int, execution_python: str | None):
     """Run optimizer with version tracking.
 
     Each candidate version is logged to:
@@ -47,6 +48,7 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
     print(f"Mock LLM: {mock_llm}", flush=True)
     print(f"Max iterations: {max_iterations or 'unlimited'}", flush=True)
     print(f"Batch size: {batch_size}", flush=True)
+    print(f"Execution Python: {execution_python or '(fallback to sys.executable)'}", flush=True)
     print("=" * 80 + "\n", flush=True)
     print("Note: configuration confirmation will happen inside optimizer phase.", flush=True)
 
@@ -128,6 +130,7 @@ def main(project: str, max_iterations: int | None, mock_llm: bool, batch_size: i
             result = _execute_optimizer_phase(
                 work_dir, config, phase_copy, project_path, resource_usage, batch,
                 sampler=sampler, mock_llm=mock_llm,
+                execution_python=execution_python,
             )
         except Exception as e:
             print(f"[ERROR] Iteration failed: {e}", flush=True)

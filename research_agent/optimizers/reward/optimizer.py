@@ -8,6 +8,16 @@ from typing import Any
 
 from research_agent.core.config import AgentConfig
 from research_agent.optimizers.base import BaseOptimizer, Candidate
+from research_agent.optimizers.reward.reward_patch_utils import (
+    add_diff_header_if_missing,
+    auto_fix_indentation,
+    build_source_meta,
+    extract_target_context,
+    fix_diff_line_counts,
+    format_baseline,
+    format_ideas,
+    parse_error_line,
+)
 
 PROPOSE_SYSTEM_PROMPT = """You are a reward function optimizer for RL and control projects.
 Given the current reward function code, baseline metrics, and research ideas,
@@ -106,20 +116,33 @@ class RewardOptimizer(BaseOptimizer):
         from research_agent.optimizers.base import normalize_allowed_changes
         allowed = normalize_allowed_changes(phase.get("allowed_changes", []))
         forbidden = phase.get("forbidden_changes", [])
+        if not allowed:
+            candidate_id = self.next_candidate_id()
+            candidate = Candidate(
+                candidate_id=candidate_id,
+                optimizer=self.name,
+                description="Rejected: no allowed reward target detected",
+                patch_diff="",
+                allowed_changes=[],
+                source_idea="missing_allowed_changes",
+            )
+            candidate.status = "rejected"
+            candidate.rejection_reason = "No allowed reward target detected"
+            return candidate
 
         # Read current reward function code
         code = self._read_reward_code(allowed)
 
         # Format baseline for prompt
-        baseline_str = self._format_baseline(baseline_metrics)
+        baseline_str = format_baseline(baseline_metrics)
 
         # Format ideas
-        ideas_str = self._format_ideas(ideas or [])
+        ideas_str = format_ideas(ideas or [])
 
         candidate_id = self.next_candidate_id()
 
         # Build source metadata from ideas
-        source_meta = self._build_source_meta(ideas or [])
+        source_meta = build_source_meta(ideas or [])
 
         # Skip LLM if mock mode
         if self._mock_llm:
@@ -156,7 +179,7 @@ class RewardOptimizer(BaseOptimizer):
                     else:
                         # Before LLM fix, try auto-indentation correction
                         if "indentation" in last_error.lower() or "indent" in last_error.lower():
-                            auto_fixed = self._auto_fix_indentation(current_diff, allowed)
+                            auto_fixed = auto_fix_indentation(self.project_path, current_diff, allowed)
                             if auto_fixed:
                                 auto_validation = self._validate_patch(auto_fixed, allowed)
                                 if auto_validation["ok"]:
@@ -171,8 +194,8 @@ class RewardOptimizer(BaseOptimizer):
                                     )
 
                         # Fix attempt: send error back to LLM with target context
-                        error_line = self._parse_error_line(last_error)
-                        target_context = self._extract_target_context(error_line, allowed) if error_line else "(could not parse error line)"
+                        error_line = parse_error_line(last_error)
+                        target_context = extract_target_context(self.project_path, error_line, allowed) if error_line else "(could not parse error line)"
 
                         fix_prompt = FIX_PROMPT.format(
                             code=code,
@@ -221,12 +244,11 @@ class RewardOptimizer(BaseOptimizer):
 
                         if diff:
                             # Add header if missing
-                            if not diff.startswith("---"):
-                                file_name = allowed[0].get("file", "env.py") if allowed else "env.py"
-                                diff = f"--- a/{file_name}\n+++ b/{file_name}\n{diff}"
+                            file_name = allowed[0].get("file", "env.py") if allowed else "env.py"
+                            diff = add_diff_header_if_missing(diff, file_name)
 
                             # Fix line counts in @@ header
-                            diff = self._fix_diff_line_counts(diff)
+                            diff = fix_diff_line_counts(diff)
 
                             # Validate: try to apply patch and check compilation
                             validation = self._validate_patch(diff, allowed)
@@ -245,7 +267,7 @@ class RewardOptimizer(BaseOptimizer):
                                 current_desc = desc
                                 current_rationale = rationale
                                 last_error = validation["error"]
-                                error_line = self._parse_error_line(last_error)
+                                error_line = parse_error_line(last_error)
                                 context_hint = f" (line {error_line})" if error_line else ""
                                 print(f"[LLM] Patch validation failed (attempt {attempt}/{max_fix_attempts}){context_hint}: {last_error[:150]}", flush=True)
                                 continue
@@ -301,176 +323,6 @@ class RewardOptimizer(BaseOptimizer):
                     except OSError:
                         continue
         return "# No reward function file found"
-
-    def _fix_diff_line_counts(self, diff: str) -> str:
-        """Fix line counts in @@ headers to match actual diff content."""
-        import re
-
-        lines = diff.split("\n")
-        result = []
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if line.startswith("@@"):
-                # Parse the header
-                match = re.match(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@", line)
-                if match:
-                    old_start = match.group(1)
-                    new_start = match.group(3)
-
-                    # Count actual lines
-                    old_count = 0
-                    new_count = 0
-                    j = i + 1
-                    while j < len(lines):
-                        l = lines[j]
-                        if l.startswith("@@") or l.startswith("---") or l.startswith("+++"):
-                            break
-                        if l.startswith("-"):
-                            old_count += 1
-                        elif l.startswith("+"):
-                            new_count += 1
-                        elif l.startswith(" ") or l == "":
-                            old_count += 1
-                            new_count += 1
-                        j += 1
-
-                    # Fix the header
-                    result.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")
-                    i += 1
-                    continue
-            result.append(line)
-            i += 1
-
-        return "\n".join(result)
-
-    def _extract_target_context(self, error_line: int, allowed_changes: list[dict], context_radius: int = 10) -> str:
-        """Extract code context around the error line with exact indentation."""
-        if not allowed_changes:
-            return "(no allowed changes specified)"
-        file_name = allowed_changes[0].get("file", "env.py") if allowed_changes else "env.py"
-        if isinstance(allowed_changes[0], str):
-            file_name = allowed_changes[0]
-        file_path = self.project_path / file_name
-
-        if not file_path.exists():
-            return "(file not found)"
-
-        try:
-            content = file_path.read_text(encoding="utf-8-sig")
-            lines = content.splitlines()
-            start = max(0, error_line - context_radius - 1)
-            end = min(len(lines), error_line + context_radius)
-            context_lines = []
-            for i in range(start, end):
-                marker = " >>> " if i == error_line - 1 else "     "
-                context_lines.append(f"{i+1:4d}{marker}{lines[i]}")
-            return "\n".join(context_lines)
-        except Exception:
-            return "(could not read file)"
-
-    def _parse_error_line(self, error: str) -> int | None:
-        """Extract line number from SyntaxError message."""
-        import re
-        match = re.search(r'line (\d+)', error)
-        if match:
-            return int(match.group(1))
-        return None
-
-    def _auto_fix_indentation(self, diff: str, allowed_changes: list[dict]) -> str | None:
-        """Try to automatically fix indentation issues in a diff.
-
-        Returns fixed diff if successful, None if cannot fix.
-        """
-        import re
-
-        # Parse the diff to find added lines (+ lines)
-        lines = diff.split("\n")
-        added_lines = []
-        for line in lines:
-            if line.startswith("+") and not line.startswith("+++"):
-                added_lines.append(line[1:])  # Remove the +
-
-        if not added_lines:
-            return None
-
-        # Get the target file to check expected indentation
-        file_name = allowed_changes[0].get("file", "env.py") if allowed_changes else "env.py"
-        if isinstance(allowed_changes[0], str):
-            file_name = allowed_changes[0]
-        file_path = self.project_path / file_name
-
-        if not file_path.exists():
-            return None
-
-        try:
-            original = file_path.read_text(encoding="utf-8-sig")
-            original_lines = original.splitlines()
-        except Exception:
-            return None
-
-        # Find the @@ header to get the target line range
-        header_match = re.search(r'@@ -(\d+),(\d+) \+(\d+),(\d+) @@', diff)
-        if not header_match:
-            return None
-
-        target_start = int(header_match.group(1)) - 1  # 0-indexed
-
-        # Check if added lines have inconsistent indentation with surrounding code
-        if target_start >= len(original_lines):
-            return None
-
-        # Get the indentation of the line before the target
-        ref_line_idx = target_start
-        while ref_line_idx >= 0 and original_lines[ref_line_idx].strip() == "":
-            ref_line_idx -= 1
-
-        if ref_line_idx < 0:
-            return None
-
-        ref_indent = len(original_lines[ref_line_idx]) - len(original_lines[ref_line_idx].lstrip())
-
-        # Check if all added lines have the same indentation
-        added_indents = []
-        for line in added_lines:
-            if line.strip():  # Skip empty lines
-                added_indents.append(len(line) - len(line.lstrip()))
-
-        if not added_indents:
-            return None
-
-        # If added lines have inconsistent indentation, try to fix
-        min_indent = min(added_indents)
-        max_indent = max(added_indents)
-
-        # If there's a significant indentation inconsistency (> 4 spaces difference)
-        if max_indent - min_indent > 4:
-            # Use the reference indentation
-            fixed_lines = []
-            for line in added_lines:
-                if line.strip():
-                    # Preserve relative indentation within the block
-                    current_indent = len(line) - len(line.lstrip())
-                    relative_indent = current_indent - min_indent
-                    new_indent = ref_indent + relative_indent
-                    fixed_lines.append(" " * new_indent + line.lstrip())
-                else:
-                    fixed_lines.append("")
-
-            # Reconstruct the diff
-            result = []
-            added_idx = 0
-            for line in lines:
-                if line.startswith("+") and not line.startswith("+++"):
-                    if added_idx < len(fixed_lines):
-                        result.append("+" + fixed_lines[added_idx])
-                        added_idx += 1
-                else:
-                    result.append(line)
-
-            return "\n".join(result)
-
-        return None
 
     def _validate_patch(self, diff: str, allowed_changes: list[dict]) -> dict:
         """Validate a patch by trying to apply it and checking compilation.
@@ -623,67 +475,3 @@ class RewardOptimizer(BaseOptimizer):
 
         return ""
 
-    def _format_baseline(self, metrics: dict[str, dict[str, float]]) -> str:
-        lines = []
-        for name, vals in metrics.items():
-            mean = vals.get("mean", 0)
-            std = vals.get("std", 0)
-            lines.append(f"  {name}: {mean:.4f} (std: {std:.4f})")
-        return "\n".join(lines) if lines else "  (no baseline metrics)"
-
-    def _format_ideas(self, ideas: list[dict]) -> str:
-        if not ideas:
-            return "  (no ideas available)"
-        lines = []
-        for idea in ideas[:5]:
-            cat = idea.get("category", "")
-            desc = idea.get("description", "")
-            # Rich method from pool
-            if idea.get("implementation_template"):
-                core = idea.get("core_idea", desc)
-                formula = idea.get("reward_formula", "N/A")
-                template = idea.get("implementation_template", "N/A")
-                layers = ", ".join(idea.get("applicable_layers", []))
-                metrics = ", ".join(idea.get("applicable_metrics", []))
-                risks = ", ".join(idea.get("risks", [])[:2])
-                lines.append(f"  [{cat}] {core}")
-                lines.append(f"    Formula: {formula}")
-                lines.append(f"    Template: {template}")
-                if layers:
-                    lines.append(f"    Layers: {layers}")
-                if metrics:
-                    lines.append(f"    Metrics: {metrics}")
-                if risks:
-                    lines.append(f"    Risks: {risks}")
-            else:
-                lines.append(f"  - [{cat}] {desc}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _build_source_meta(ideas: list[dict]) -> dict:
-        """Extract source metadata from ideas for candidate tracking."""
-        method_ids = []
-        categories = []
-        source_papers = []
-        for idea in ideas:
-            mid = idea.get("method_id", "")
-            if mid:
-                method_ids.append(mid)
-            cat = idea.get("category", "")
-            if cat and cat not in categories:
-                categories.append(cat)
-            papers = idea.get("source_papers", [])
-            for p in papers:
-                if p not in source_papers:
-                    source_papers.append(p)
-            # Also check source_paper dict
-            sp = idea.get("source_paper", {})
-            pid = sp.get("paper_id", "")
-            if pid and pid not in source_papers:
-                source_papers.append(pid)
-        return {
-            "source_method_ids": method_ids,
-            "source_categories": categories,
-            "source_papers": source_papers,
-            "source_idea": "pool_methods" if method_ids else "extracted_ideas",
-        }

@@ -31,6 +31,7 @@ def run_train(
     extra_env: dict[str, str] | None = None,
     timeout_override: int | None = None,
     checkpoint_dir: Path | None = None,
+    python_executable: str | None = None,
 ) -> RunResult:
     """Run training command for a single seed.
 
@@ -64,7 +65,8 @@ def run_train(
         env["RA_CHECKPOINT_DIR"] = str(checkpoint_dir)
 
     timeout = timeout_override or config.execution.timeout_seconds_per_seed
-    return _run_subprocess(project_path, formatted_command, timeout, env or None)
+    return _run_subprocess(project_path, formatted_command, timeout, env or None,
+                           python_executable=python_executable)
 
 
 def run_eval(
@@ -74,6 +76,7 @@ def run_eval(
     work_dir: Path | None = None,
     extra_env: dict[str, str] | None = None,
     timeout_override: int | None = None,
+    python_executable: str | None = None,
 ) -> RunResult:
     """Run evaluation command for a single seed and parse metrics.
 
@@ -101,7 +104,8 @@ def run_eval(
     formatted_command = command.replace("{seed}", str(seed))
     timeout = timeout_override or config.execution.timeout_seconds_per_seed
 
-    result = _run_subprocess(project_path, formatted_command, timeout, extra_env)
+    result = _run_subprocess(project_path, formatted_command, timeout, extra_env,
+                              python_executable=python_executable)
 
     # Parse metrics from output
     metrics = parse_metrics(result.stdout, result.stderr, config, work_dir)
@@ -124,6 +128,7 @@ def run_full_eval(
     work_dir: Path | None = None,
     extra_env: dict[str, str] | None = None,
     checkpoint_dir: Path | None = None,
+    python_executable: str | None = None,
 ) -> list[RunResult]:
     """Run evaluation across multiple seeds.
 
@@ -148,7 +153,8 @@ def run_full_eval(
 
     results: list[RunResult] = []
     for seed in seeds:
-        result = run_eval(project_path, config, seed, work_dir, env or None)
+        result = run_eval(project_path, config, seed, work_dir, env or None,
+                          python_executable=python_executable)
         results.append(result)
 
     return results
@@ -198,9 +204,25 @@ def _run_subprocess(
     command: str,
     timeout: int,
     extra_env: dict[str, str] | None,
+    python_executable: str | None = None,
 ) -> RunResult:
-    """Run a command as subprocess and capture output."""
+    """Run a command as subprocess and capture output.
+
+    If python_executable is provided, resolves {python} placeholder in command
+    or prepends the executable to commands starting with 'python'.
+    """
     import os
+
+    # Resolve execution Python in command
+    if python_executable:
+        if "{python}" in command:
+            command = command.replace("{python}", python_executable)
+        else:
+            stripped = command.strip()
+            for prefix in ("python3 ", "python "):
+                if stripped.startswith(prefix):
+                    command = python_executable + stripped[len(prefix) - 1:]
+                    break
 
     env = os.environ.copy()
     if extra_env:

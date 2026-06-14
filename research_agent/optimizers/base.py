@@ -10,6 +10,7 @@ from typing import Any
 
 from research_agent.core.config import AgentConfig
 from research_agent.core.llm_client import LLMClient
+from research_agent.core.metrics_utils import get_eval_metric_defs
 from research_agent.core.output import append_jsonl
 from research_agent.execution.experiment_runner import RunResult, aggregate_metrics, run_eval, run_full_eval
 
@@ -75,11 +76,13 @@ class BaseOptimizer(ABC):
         config: AgentConfig,
         project_path: Path,
         mock_llm: bool = False,
+        execution_python: str | None = None,
     ):
         self.work_dir = work_dir
         self.config = config
         self.project_path = project_path
         self._mock_llm = mock_llm
+        self.execution_python = execution_python
         self._llm_client: LLMClient | None = None
         self._candidate_counter = 0
 
@@ -140,7 +143,8 @@ class BaseOptimizer(ABC):
         seeds = cfg.execution.full_eval_seeds
 
         results = run_full_eval(self.project_path, cfg, seeds, self.work_dir,
-                                checkpoint_dir=checkpoint_dir)
+                                checkpoint_dir=checkpoint_dir,
+                                python_executable=self.execution_python)
         aggregated = aggregate_metrics(results)
 
         has_failure = any(r.return_code != 0 for r in results)
@@ -173,12 +177,12 @@ class BaseOptimizer(ABC):
             return {"error": "No full eval result"}
 
         current = candidate.full_eval_result.get("metrics", {})
-        primary_metrics = self.config.metrics.primary
+        primary_metrics = get_eval_metric_defs(self.config)
         comparison: dict[str, Any] = {}
 
         for metric in primary_metrics:
-            name = metric.get("name", "") if isinstance(metric, dict) else str(metric)
-            direction = metric.get("direction", "maximize") if isinstance(metric, dict) else "maximize"
+            name = metric.name
+            direction = metric.direction
 
             current_val = current.get(name, {}).get("mean")
             baseline_val = baseline_metrics.get(name, {}).get("mean")
@@ -215,12 +219,12 @@ class BaseOptimizer(ABC):
         """
         comparison = self.compare_with_baseline(candidate, baseline_metrics)
 
-        primary_metrics = self.config.metrics.primary
+        primary_metrics = get_eval_metric_defs(self.config)
         min_improvement = self.config.metrics.metric_thresholds.default_min_improvement_pct
         max_regression = self.config.metrics.metric_thresholds.default_max_regression_pct
 
         for metric in primary_metrics:
-            name = metric.get("name", "") if isinstance(metric, dict) else str(metric)
+            name = metric.name
             comp = comparison.get(name, {})
 
             if comp.get("status") == "missing_data":
@@ -229,11 +233,11 @@ class BaseOptimizer(ABC):
             pct = comp.get("pct_change", 0)
 
             # Check hard regression on primary score
-            if metric.get("hard_min") is not None:
+            if metric.hard_min is not None:
                 current = comp.get("current", 0)
-                if current < metric["hard_min"]:
+                if current < metric.hard_min:
                     candidate.status = "rejected"
-                    candidate.rejection_reason = f"{name} below hard_min: {current} < {metric['hard_min']}"
+                    candidate.rejection_reason = f"{name} below hard_min: {current} < {metric.hard_min}"
                     self._log_candidate(candidate)
                     return False
 
@@ -246,8 +250,7 @@ class BaseOptimizer(ABC):
 
         # Check if at least one primary metric improved
         any_improved = any(
-            comparison.get(m.get("name", m) if isinstance(m, dict) else m, {}).get("improved", False)
-            for m in primary_metrics
+            comparison.get(m.name, {}).get("improved", False) for m in primary_metrics
         )
 
         if any_improved:

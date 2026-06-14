@@ -19,6 +19,9 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
 ]
+langgraph = [
+    "langgraph>=0.4,<1.0",
+]
 
 [project.scripts]
 research-agent = "research_agent.interfaces.cli:main"

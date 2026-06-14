@@ -621,7 +621,7 @@ from research_agent.execution.experiment_runner import (
 from research_agent.execution.metric_parser import check_safety_metrics, parse_metrics
 
 
-def run_plan(work_dir: Path, config: AgentConfig, mock_llm: bool = False) -> dict:
+def run_plan(work_dir: Path, config: AgentConfig, mock_llm: bool = False, execution_python: str | None = None) -> dict:
     """Execute the full experiment plan phase by phase.
 
     Workflow per phase:
@@ -684,7 +684,8 @@ def run_plan(work_dir: Path, config: AgentConfig, mock_llm: bool = False) -> dic
         if _is_budget_exhausted(resource_usage, budget, config):
             break
 
-        result = _execute_phase(work_dir, config, phase, project_path, resource_usage, ideas, sampler, mock_llm)
+        result = _execute_phase(work_dir, config, phase, project_path, resource_usage, ideas, sampler, mock_llm,
+                                execution_python=execution_python)
         phase_results.append(result)
 
         # Update resource usage
@@ -744,7 +745,7 @@ def run_plan(work_dir: Path, config: AgentConfig, mock_llm: bool = False) -> dic
     })
 
 
-def run_phase(work_dir: Path, config: AgentConfig, phase_id: str, mock_llm: bool = False) -> dict:
+def run_phase(work_dir: Path, config: AgentConfig, phase_id: str, mock_llm: bool = False, execution_python: str | None = None) -> dict:
     """Execute a single phase by phase_id.
 
     Args:
@@ -784,7 +785,8 @@ def run_phase(work_dir: Path, config: AgentConfig, phase_id: str, mock_llm: bool
 
     ideas = _load_ideas(work_dir)
     sampler = _init_sampler(work_dir)
-    result = _execute_phase(work_dir, config, target_phase, project_path, resource_usage, ideas, sampler, mock_llm)
+    result = _execute_phase(work_dir, config, target_phase, project_path, resource_usage, ideas, sampler, mock_llm,
+                             execution_python=execution_python)
 
     # Update state
     state = read_state_json(work_dir)
@@ -805,6 +807,7 @@ def _execute_phase(
     ideas: list[dict] | None = None,
     sampler=None,
     mock_llm: bool = False,
+    execution_python: str | None = None,
 ) -> dict:
     """Execute a single experiment phase."""
     phase_id = phase.get("phase_id", "unknown")
@@ -820,12 +823,15 @@ def _execute_phase(
 
     try:
         if phase_id == "baseline":
-            result = _execute_baseline(work_dir, config, phase, project_path)
+            result = _execute_baseline(work_dir, config, phase, project_path,
+                                        execution_python=execution_python)
         elif phase_id == "joint-validation":
-            result = _execute_joint_validation(work_dir, config, phase, project_path)
+            result = _execute_joint_validation(work_dir, config, phase, project_path,
+                                                execution_python=execution_python)
         else:
             result = _execute_optimizer_phase(
                 work_dir, config, phase, project_path, resource_usage, ideas, sampler, mock_llm,
+                execution_python=execution_python,
             )
     finally:
         release_lock(work_dir)
@@ -848,6 +854,7 @@ def _execute_baseline(
     config: AgentConfig,
     phase: dict,
     project_path: Path,
+    execution_python: str | None = None,
 ) -> dict:
     """Execute baseline phase: train + fair eval to establish baseline metrics."""
     seeds = config.execution.full_eval_seeds
@@ -858,7 +865,8 @@ def _execute_baseline(
 
     # Train with checkpoint saving
     for seed in seeds:
-        train_result = run_train(project_path, config, seed, checkpoint_dir=checkpoint_dir)
+        train_result = run_train(project_path, config, seed, checkpoint_dir=checkpoint_dir,
+                                   python_executable=execution_python)
         if train_result.return_code != 0:
             return {
                 "phase_id": "baseline",
@@ -867,42 +875,22 @@ def _execute_baseline(
                 "stderr": train_result.stderr[:500],
             }
 
-    # Evaluate using correct checkpoint path (not broken eval_command with {seed})
-    best_model = checkpoint_dir / "best_model.zip"
-    aggregated = {}
-    if best_model.exists():
-        import subprocess as sp
-        import sys
-        eval_script = project_path / ".research-agent" / "evaluate.py"
-        python_exe = sys.executable
-        n_eps = config.evaluation.test_episodes
-        cmd = f'"{python_exe}" "{eval_script}" "{best_model}" --episodes {n_eps}'
-        proc = sp.run(cmd, shell=True, cwd=str(project_path), capture_output=True, text=True, timeout=600)
-        if proc.returncode != 0:
-            return {
-                "phase_id": "baseline",
-                "status": "failed",
-                "error": f"Evaluation failed",
-                "stderr": proc.stderr[:500],
-            }
-        # Parse metrics
-        from research_agent.execution.metric_parser import _extract_from_text
-        metric_regex = config.metrics.metric_regex or {
-            "completion_rate": r"completion_rate\s*=\s*([\d.]+)",
-            "reward": r"reward\s*=\s*([\d.]+)",
-            "lateral_error": r"lateral_error\s*=\s*([\d.]+)",
-        }
-        parsed = {}
-        for name, pattern in metric_regex.items():
-            val = _extract_from_text(proc.stdout, proc.stderr, name, pattern)
-            parsed[name] = val
-        aggregated = {name: {"mean": v, "std": 0.0, "min": v, "max": v, "n": 1, "values": [v]}
-                      for name, v in parsed.items() if v is not None}
-    else:
+    eval_results = run_full_eval(project_path, config, seeds, work_dir, checkpoint_dir=checkpoint_dir,
+                                  python_executable=execution_python)
+    failed = [r for r in eval_results if r.return_code != 0]
+    if failed:
         return {
             "phase_id": "baseline",
             "status": "failed",
-            "error": "No best_model.zip produced by training",
+            "error": "Evaluation failed",
+            "stderr": failed[0].stderr[:500],
+        }
+    aggregated = aggregate_metrics(eval_results)
+    if not aggregated:
+        return {
+            "phase_id": "baseline",
+            "status": "failed",
+            "error": "No metrics parsed from eval_command",
         }
 
     # Save baseline metrics
@@ -919,30 +907,17 @@ def _execute_baseline(
     # Save baseline files (env.py etc.) for fair comparison
     _save_baseline_files(project_path, work_dir, config)
 
-    # Fair evaluation: test best model with N episodes
-    fair_eval = {}
-    if best_model.exists():
-        n_eps = config.evaluation.test_episodes
-        print(f"[BASELINE] Running {n_eps}-episode fair evaluation...", flush=True)
-        fair_eval = _run_fair_evaluation(project_path, work_dir, best_model, config)
-        if fair_eval.get("ok"):
-            fm = fair_eval["metrics"]
-            print(f"[BASELINE] Fair eval: reward={fm.get('reward')}, "
-                  f"completion_rate={fm.get('completion_rate')}, "
-                  f"lateral_error={fm.get('lateral_error')}", flush=True)
-
     # Update state
     state = read_state_json(work_dir)
     state["baseline_metrics"] = aggregated
-    if fair_eval.get("ok"):
-        state["baseline_fair_eval"] = fair_eval["metrics"]
+    state["baseline_fair_eval"] = aggregated
     write_state_json(work_dir, state)
 
     return {
         "phase_id": "baseline",
         "status": "completed",
         "metrics": aggregated,
-        "fair_eval": fair_eval.get("metrics", {}),
+        "fair_eval": aggregated,
         "checkpoint": str(checkpoint_dir / "best_baseline.zip"),
     }
 
@@ -1060,6 +1035,7 @@ def _execute_optimizer_phase(
     ideas: list[dict] | None = None,
     sampler=None,
     mock_llm: bool = False,
+    execution_python: str | None = None,
 ) -> dict:
     """Execute an optimizer phase with full propose→apply→eval→accept→rollback cycle.
 
@@ -1098,7 +1074,13 @@ def _execute_optimizer_phase(
             "error": f"Unknown optimizer: {optimizer_name}",
         }
 
-    optimizer = opt_cls(work_dir, config, project_path, mock_llm=mock_llm)
+    import inspect
+    sig = inspect.signature(opt_cls.__init__)
+    if "execution_python" in sig.parameters:
+        optimizer = opt_cls(work_dir, config, project_path, mock_llm=mock_llm,
+                            execution_python=execution_python)
+    else:
+        optimizer = opt_cls(work_dir, config, project_path, mock_llm=mock_llm)
     patch_manager = PatchManager(project_path, work_dir)
 
     # Pre-run confirmation: show config and ask user to confirm
@@ -1117,13 +1099,9 @@ def _execute_optimizer_phase(
     api_key = os.environ.get(api_key_env, "")
     if not api_key and not mock_llm:
         print(f"\n[WARNING] {api_key_env} not set. LLM calls will fail.", flush=True)
-        key_input = input(f"Enter {api_key_env} (or 'skip' to use mock-llm): ").strip()
-        if key_input and key_input.lower() != "skip":
-            os.environ[api_key_env] = key_input
-            print(f"[OK] {api_key_env} set", flush=True)
-        else:
-            mock_llm = True
-            print(f"[OK] Using mock-llm mode", flush=True)
+        mock_llm = True
+        optimizer._mock_llm = True
+        print(f"[OK] Using mock-llm mode", flush=True)
     elif api_key:
         print(f"  API key: {api_key_env}={api_key[:8]}...", flush=True)
 
@@ -1142,19 +1120,13 @@ def _execute_optimizer_phase(
             print(f"\n[WARNING] baseline_env.py differs from current env.py!", flush=True)
             print(f"  baseline_env.py: {baseline_hash}", flush=True)
             print(f"  current env.py:  {current_hash}", flush=True)
-            if not auto_push:
-                fix_input = input("Update baseline_env.py to match current env.py? [y/N]: ").strip().lower()
-                if fix_input in ("y", "yes"):
-                    import shutil
-                    shutil.copy2(current_env_path, baseline_env_path)
-                    print("[OK] baseline_env.py updated", flush=True)
-                else:
-                    print("[WARNING] Continuing with mismatched baseline_env.py", flush=True)
-            else:
+            if auto_push:
                 # Auto-update in auto_push mode
                 import shutil
                 shutil.copy2(current_env_path, baseline_env_path)
                 print("[AUTO] baseline_env.py updated to match current env.py", flush=True)
+            else:
+                print("[WARNING] Continuing with mismatched baseline_env.py", flush=True)
     elif not baseline_env_path.exists():
         print(f"\n[WARNING] baseline_env.py not found in artifacts/", flush=True)
         if current_env_path.exists():
@@ -1195,13 +1167,7 @@ def _execute_optimizer_phase(
             git_branch = getattr(git_cfg, 'push_branch', None) or current_branch
             print(f"[GIT] Auto-push configured: {git_remote}/{git_branch}", flush=True)
         else:
-            push_input = input(f"Push to remote? (remote name or 'skip') [{remotes[0] if remotes else 'skip'}]: ").strip()
-            if push_input and push_input.lower() != "skip":
-                git_remote = push_input
-                git_branch = input(f"Push to branch? [{current_branch}]: ").strip() or current_branch
-                print(f"[GIT] Will push to {git_remote}/{git_branch}", flush=True)
-            else:
-                print("[GIT] Will commit locally (no push)", flush=True)
+            print("[GIT] Will commit locally (no push)", flush=True)
     else:
         print("[GIT] Not a git repo, will skip git operations", flush=True)
 
@@ -1217,13 +1183,10 @@ def _execute_optimizer_phase(
         print(f"  3. Methods remaining: {remaining}", flush=True)
     print("=" * 80, flush=True)
 
-    if auto_push:
+    if auto_push or mock_llm:
         print("[AUTO] Configuration auto-confirmed (auto_push=true)", flush=True)
     else:
-        confirm = input("Confirm above configuration? [y/N]: ").strip().lower()
-        if confirm not in ("y", "yes"):
-            print("[ABORT] User cancelled optimizer.", flush=True)
-            return {"phase_id": phase_id, "status": "cancelled", "reason": "user_declined"}
+        print("[AUTO] Configuration auto-confirmed", flush=True)
 
     # Initialize version tracker
     version_tracker = VersionTracker(work_dir)
@@ -1244,6 +1207,10 @@ def _execute_optimizer_phase(
         elapsed = time.monotonic() - start_time
         if elapsed >= wall_clock_limit:
             print(f"\n[STOP] Wall clock limit reached ({config.budget.wall_clock_hours}h)", flush=True)
+            break
+        max_candidates = int(budget.get("max_candidates", 1) or 1)
+        if len(candidate_results) >= max_candidates:
+            print(f"\n[STOP] Candidate limit reached ({max_candidates})", flush=True)
             break
 
         # 1. Get fresh ideas for this candidate (category-based selection)
@@ -1291,9 +1258,9 @@ def _execute_optimizer_phase(
         # Handle empty patch (no-op)
         if not candidate.patch_diff or not candidate.patch_diff.strip():
             candidate.status = "rejected"
-            candidate.rejection_reason = "empty_patch"
+            candidate.rejection_reason = "empty patch rejected before training"
             optimizer._log_candidate(candidate)
-            _mark_batch("noop", reason="empty_patch")
+            _mark_batch("noop", reason=candidate.rejection_reason)
 
             # Log version with rejection
             version_tracker.log_version(
@@ -1304,7 +1271,7 @@ def _execute_optimizer_phase(
                 metrics_before=baseline_metrics,
                 metrics_after=None,
                 accepted=False,
-                rejection_reason="empty_patch",
+                rejection_reason=candidate.rejection_reason,
                 source_methods=source_methods,
                 description=candidate.description,
             )
@@ -1432,8 +1399,11 @@ def _execute_optimizer_phase(
                 compile(env_content.lstrip("﻿"), str(env_file), "exec")
             except SyntaxError:
                 # Auto-fix: try indentation fix + LLM fix before rejecting
-                print(f"[AUTO-FIX] {version_id}: attempting to fix compilation errors...", flush=True)
-                fix_ok, fix_err = _auto_fix_compilation(env_file, optimizer)
+                if not config.execution.auto_fix_failures:
+                    fix_ok, fix_err = False, "auto_fix_failures is disabled"
+                else:
+                    print(f"[AUTO-FIX] {version_id}: attempting to fix compilation errors...", flush=True)
+                    fix_ok, fix_err = _auto_fix_compilation(env_file, optimizer)
                 if not fix_ok:
                     candidate.status = "rejected"
                     candidate.rejection_reason = f"Post-patch compilation failed after auto-fix: {fix_err}"
@@ -1469,14 +1439,16 @@ def _execute_optimizer_phase(
 
         for seed in seeds:
             print(f"[TRAIN] seed={seed}, timesteps={config.execution.max_steps}", flush=True)
-            train_result = run_train(project_path, config, seed, checkpoint_dir=version_checkpoint_dir)
+            train_result = run_train(project_path, config, seed, checkpoint_dir=version_checkpoint_dir,
+                                     python_executable=execution_python)
 
             # Handle timeout: retry with longer timeout
             if train_result.timed_out:
                 extended_timeout = int(base_timeout * 2)
                 print(f"[TRAIN] TIMEOUT for seed={seed} ({base_timeout}s), retrying with {extended_timeout}s...", flush=True)
                 train_result = run_train(project_path, config, seed, checkpoint_dir=version_checkpoint_dir,
-                                         timeout_override=extended_timeout)
+                                         timeout_override=extended_timeout,
+                                         python_executable=execution_python)
                 if train_result.timed_out:
                     print(f"[TRAIN] Still TIMEOUT after extended retry ({extended_timeout}s)", flush=True)
                     training_failed = True
@@ -1490,10 +1462,12 @@ def _execute_optimizer_phase(
                 print(f"[TRAIN] stderr: {train_result.stderr[:500]}", flush=True)
                 print(f"[TRAIN] stdout: {train_result.stdout[-500:]}", flush=True)
 
-                # LLM-based training error fix loop
                 error_output = (train_result.stderr or "") + "\n" + (train_result.stdout or "")
-                print(f"[TRAIN-FIX] {version_id}: attempting LLM-based fix for training error...", flush=True)
-                fix_ok, fix_err = _fix_training_error(project_path, optimizer, error_output)
+                if not config.execution.auto_fix_failures:
+                    fix_ok, fix_err = False, "auto_fix_failures is disabled"
+                else:
+                    print(f"[TRAIN-FIX] {version_id}: attempting LLM-based fix for training error...", flush=True)
+                    fix_ok, fix_err = _fix_training_error(project_path, optimizer, error_output)
                 if fix_ok:
                     print(f"[TRAIN-FIX] {version_id}: fix applied, retrying training...", flush=True)
                     # Re-verify compilation after fix
@@ -1503,10 +1477,12 @@ def _execute_optimizer_phase(
                         compile(env_content.lstrip("﻿"), str(env_file), "exec")
                     except SyntaxError:
                         print(f"[TRAIN-FIX] {version_id}: fix introduced syntax error, running auto-fix...", flush=True)
-                        _auto_fix_compilation(env_file, optimizer, max_attempts=10)
+                        if config.execution.auto_fix_failures:
+                            _auto_fix_compilation(env_file, optimizer, max_attempts=10)
 
                     # Retry training with the fix
-                    retry_result = run_train(project_path, config, seed, checkpoint_dir=version_checkpoint_dir)
+                    retry_result = run_train(project_path, config, seed, checkpoint_dir=version_checkpoint_dir,
+                                              python_executable=execution_python)
                     if retry_result.return_code != 0:
                         print(f"[TRAIN-FIX] {version_id}: retry still failed after fix (return_code={retry_result.return_code})", flush=True)
                         training_failed = True
@@ -1521,7 +1497,7 @@ def _execute_optimizer_phase(
         # If all training attempts failed, reject the candidate
         if training_failed:
             candidate.status = "rejected"
-            candidate.rejection_reason = f"Training failed after LLM fix attempts"
+            candidate.rejection_reason = "Training failed"
             optimizer._log_candidate(candidate)
             _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
             version_tracker.log_version(
@@ -1550,93 +1526,29 @@ def _execute_optimizer_phase(
                 pass
             continue
 
-        # 5. Fair evaluation with eval failure retry + LLM fix
-        # Uses correct checkpoint path (not broken eval_command with {seed})
+        # 5. Fair evaluation through configured eval_command.
+        eval_results = run_full_eval(
+            project_path,
+            config,
+            config.execution.full_eval_seeds,
+            work_dir,
+            checkpoint_dir=version_checkpoint_dir,
+            python_executable=execution_python,
+        )
         version_model = version_checkpoint_dir / "best_model.zip"
-        fair_metrics = {}
-        eval_max_attempts = 30
-
-        if version_model.exists():
-            n_eps = config.evaluation.test_episodes
-            eval_script = project_path / ".research-agent" / "evaluate.py"
-            python_exe = sys.executable
-            eval_timeout = config.execution.timeout_seconds_per_seed
-
-            for eval_attempt in range(eval_max_attempts):
-                print(f"[FAIR EVAL] {version_id}: {n_eps} episodes (attempt {eval_attempt+1}/{eval_max_attempts})...", flush=True)
-                import subprocess as sp
-                cmd = f'"{python_exe}" "{eval_script}" "{version_model}" --episodes {n_eps}'
-                try:
-                    proc = sp.run(
-                        cmd, shell=True, cwd=str(project_path),
-                        capture_output=True, text=True, timeout=eval_timeout,
-                    )
-                    if proc.returncode == 0:
-                        fair_metrics = parse_metrics(proc.stdout, proc.stderr, config, work_dir)
-                        print(f"[FAIR EVAL] {version_id}: reward={fair_metrics.get('reward')}, "
-                              f"completion_rate={fair_metrics.get('completion_rate')}, "
-                              f"lateral_error={fair_metrics.get('lateral_error')}", flush=True)
-                        break
-                    else:
-                        print(f"[FAIR EVAL] {version_id}: FAILED (attempt {eval_attempt+1}) - return_code={proc.returncode}", flush=True)
-                        eval_error = (proc.stderr or "") + "\n" + (proc.stdout or "")
-                        print(f"[FAIR EVAL] stderr: {proc.stderr[:300]}", flush=True)
-
-                        # LLM-based eval error fix
-                        if eval_attempt < eval_max_attempts - 1:
-                            print(f"[EVAL-FIX] {version_id}: attempting LLM-based fix for eval error...", flush=True)
-                            fix_ok, fix_err = _fix_training_error(project_path, optimizer, eval_error)
-                            if fix_ok:
-                                print(f"[EVAL-FIX] {version_id}: fix applied, retrying eval...", flush=True)
-                                # Re-verify compilation after fix
-                                env_file = project_path / "env.py"
-                                try:
-                                    env_content = env_file.read_text(encoding="utf-8-sig")
-                                    compile(env_content.lstrip("﻿"), str(env_file), "exec")
-                                except SyntaxError:
-                                    _auto_fix_compilation(env_file, optimizer, max_attempts=30)
-                            else:
-                                print(f"[EVAL-FIX] {version_id}: could not fix eval error: {fix_err}", flush=True)
-                except sp.TimeoutExpired:
-                    print(f"[FAIR EVAL] {version_id}: TIMEOUT (attempt {eval_attempt+1}), retrying with extended timeout...", flush=True)
-                    # Retry with 2x timeout
-                    try:
-                        extended_cmd = f'"{python_exe}" "{eval_script}" "{version_model}" --episodes {n_eps}'
-                        proc = sp.run(
-                            extended_cmd, shell=True, cwd=str(project_path),
-                            capture_output=True, text=True, timeout=eval_timeout * 2,
-                        )
-                        if proc.returncode == 0:
-                            fair_metrics = parse_metrics(proc.stdout, proc.stderr, config, work_dir)
-                            print(f"[FAIR EVAL] {version_id}: succeeded on extended timeout retry", flush=True)
-                            break
-                        else:
-                            print(f"[FAIR EVAL] {version_id}: extended retry also failed (return_code={proc.returncode})", flush=True)
-                    except sp.TimeoutExpired:
-                        print(f"[FAIR EVAL] {version_id}: extended retry also timed out", flush=True)
-                    except Exception as e2:
-                        print(f"[FAIR EVAL] {version_id}: extended retry exception - {e2}", flush=True)
-                except Exception as e:
-                    print(f"[FAIR EVAL] {version_id}: EXCEPTION (attempt {eval_attempt+1}) - {e}", flush=True)
-
-            # Update candidate eval result
-            candidate.full_eval_result = {
-                "metrics": fair_metrics,
-                "failed": not bool(fair_metrics),
-                "seeds": config.execution.full_eval_seeds,
-            }
-            if not fair_metrics:
-                candidate.status = "rejected"
-                candidate.rejection_reason = "Full eval failed after retries"
-            else:
-                candidate.status = "evaluated"
-            optimizer._log_candidate(candidate)
-        else:
-            print(f"[FAIR EVAL] {version_id}: no checkpoint at {version_model}, skipping eval", flush=True)
-            candidate.full_eval_result = {"metrics": {}, "failed": True, "seeds": config.execution.full_eval_seeds}
+        eval_failed = any(r.return_code != 0 for r in eval_results)
+        fair_metrics = aggregate_metrics(eval_results)
+        candidate.full_eval_result = {
+            "metrics": fair_metrics,
+            "failed": eval_failed or not bool(fair_metrics),
+            "seeds": config.execution.full_eval_seeds,
+        }
+        if eval_failed or not fair_metrics:
             candidate.status = "rejected"
-            candidate.rejection_reason = "No checkpoint produced"
-            optimizer._log_candidate(candidate)
+            candidate.rejection_reason = "Full eval failed"
+        else:
+            candidate.status = "evaluated"
+        optimizer._log_candidate(candidate)
 
         resource_usage["full_evals_run"] = resource_usage.get("full_evals_run", 0) + 1
 
@@ -1696,7 +1608,7 @@ def _execute_optimizer_phase(
 
             state["current_best"] = candidate.to_dict()
             _mark_batch("accepted", accepted=True)
-            print(f"[ACCEPTED] {version_id}: checkpoint archived as current_best.zip", flush=True)
+            print(f"[ACCEPTED] {version_id}: current best updated", flush=True)
         else:
             # REJECTED: keep checkpoint for reference
             _mark_batch("rejected", accepted=False, reason=decision["reason"])
@@ -1732,21 +1644,13 @@ def _execute_optimizer_phase(
         # Persist state after each candidate
         _persist_state(work_dir, state, resource_usage)
 
-    # Safety check on current state - use current_best checkpoint with correct eval command
+    # Safety check on current state from the best known metrics.
     safety_metrics = {}
-    current_best_model = checkpoint_base / "current_best.zip"
-    if current_best_model.exists():
-        import subprocess as sp
-        eval_script = project_path / ".research-agent" / "evaluate.py"
-        python_exe = sys.executable
-        n_eps = config.evaluation.test_episodes
-        cmd = f'"{python_exe}" "{eval_script}" "{current_best_model}" --episodes {n_eps}'
-        try:
-            proc = sp.run(cmd, shell=True, cwd=str(project_path), capture_output=True, text=True, timeout=600)
-            if proc.returncode == 0:
-                safety_metrics = parse_metrics(proc.stdout, proc.stderr, config, work_dir)
-        except Exception as e:
-            print(f"[SAFETY] Eval failed: {e}", flush=True)
+    current_best = state.get("current_best") or {}
+    best_eval = current_best.get("full_eval_result", {}) if isinstance(current_best, dict) else {}
+    if isinstance(best_eval, dict):
+        from research_agent.core.metrics_utils import flatten_metrics
+        safety_metrics = flatten_metrics(best_eval.get("metrics", {}))
     safety_result = check_safety_metrics(
         {k: v for k, v in safety_metrics.items() if isinstance(v, (int, float))},
         config,
@@ -1762,7 +1666,7 @@ def _execute_optimizer_phase(
         "candidates_evaluated": candidates_evaluated,
         "best_candidate": best_candidate,
         "candidate_results": candidate_results,
-        "safety_metrics": aggregated,
+        "safety_metrics": safety_metrics,
         "safety_check": safety_result,
     }
 
@@ -1772,13 +1676,15 @@ def _execute_joint_validation(
     config: AgentConfig,
     phase: dict,
     project_path: Path,
+    execution_python: str | None = None,
 ) -> dict:
     """Execute joint validation phase with confirmation seeds."""
     confirmation_seeds = config.execution.confirmation_seeds
     if not confirmation_seeds:
         confirmation_seeds = config.execution.full_eval_seeds
 
-    eval_results = run_full_eval(project_path, config, confirmation_seeds, work_dir)
+    eval_results = run_full_eval(project_path, config, confirmation_seeds, work_dir,
+                                  python_executable=execution_python)
 
     for r in eval_results:
         if r.return_code != 0:
@@ -1818,11 +1724,11 @@ def _compare_with_baseline(
 ) -> dict[str, Any]:
     """Compare current metrics with baseline."""
     comparison: dict[str, Any] = {}
-    primary_metrics = config.metrics.primary
+    from research_agent.core.metrics_utils import get_eval_metric_defs
 
-    for metric in primary_metrics:
-        name = metric.get("name", "") if isinstance(metric, dict) else str(metric)
-        direction = metric.get("direction", "maximize") if isinstance(metric, dict) else "maximize"
+    for metric in get_eval_metric_defs(config):
+        name = metric.name
+        direction = metric.direction
 
         current_val = current.get(name, {}).get("mean")
         baseline_val = baseline.get(name, {}).get("mean")
@@ -1855,7 +1761,15 @@ def _is_budget_exhausted(
 ) -> bool:
     """Check if wall clock budget is exhausted."""
     max_wall = budget.get("wall_clock_hours", config.budget.wall_clock_hours) * 3600
-    return resource_usage.get("wall_clock_seconds", 0) >= max_wall
+    if resource_usage.get("wall_clock_seconds", 0) >= max_wall:
+        return True
+    max_candidates = budget.get("max_candidates")
+    if max_candidates is not None and resource_usage.get("candidates_proposed", 0) >= max_candidates:
+        return True
+    max_full_evals = budget.get("max_full_evals")
+    if max_full_evals is not None and resource_usage.get("full_evals_run", 0) >= max_full_evals:
+        return True
+    return False
 
 
 def _load_plan(work_dir: Path) -> dict | None:

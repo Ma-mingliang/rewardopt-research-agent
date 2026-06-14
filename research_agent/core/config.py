@@ -125,14 +125,17 @@ class LiteratureConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
     train_command: str = ""
     eval_command: str = ""
+    python_executable: str = ""  # execution python; empty = fallback to sys.executable
     max_steps: int = 20000
+    screening_seeds: list[int] = Field(default_factory=lambda: [42])
     full_eval_seeds: list[int] = Field(default_factory=lambda: [42, 123, 456])
     confirmation_seeds: list[int] = Field(default_factory=lambda: [789, 101112])
     timeout_seconds_per_seed: int = 3600
+    auto_fix_failures: bool = False
 
 
 class GitConfig(BaseModel):
@@ -158,6 +161,14 @@ class OptimizerConfig(BaseModel):
 
     active_categories: list[str] = Field(default_factory=list)
     methods_per_category: int = 2
+
+
+class AutoConfigConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    confidence_threshold: float = 0.65
+    require_confirmation: bool = True
 
 
 class EvalMetricConfig(BaseModel):
@@ -201,6 +212,7 @@ class AgentConfig(BaseModel):
     git: GitConfig = Field(default_factory=GitConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
+    autoconfig: AutoConfigConfig = Field(default_factory=AutoConfigConfig)
 
 
 def load_config(work_dir: Path) -> AgentConfig:
@@ -222,6 +234,7 @@ def load_config(work_dir: Path) -> AgentConfig:
             overrides = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, overrides)
 
+    raw = _migrate_legacy_metrics(raw)
     return AgentConfig.model_validate(raw)
 
 
@@ -233,4 +246,53 @@ def _deep_merge(base: dict, overrides: dict) -> dict:
             result[key] = _deep_merge(result[key], value)
         else:
             result[key] = value
+    return result
+
+
+def _migrate_legacy_metrics(raw: dict) -> dict:
+    """Populate evaluation.metrics from legacy metrics.primary/safety when needed."""
+    result = raw.copy()
+    evaluation = dict(result.get("evaluation") or {})
+    existing = evaluation.get("metrics") or []
+    if existing:
+        result["evaluation"] = evaluation
+        return result
+
+    legacy = result.get("metrics") or {}
+    migrated: list[dict] = []
+    for item in legacy.get("primary") or []:
+        if isinstance(item, str):
+            migrated.append({"name": item, "direction": "maximize", "weight": 1.0})
+        elif isinstance(item, dict):
+            metric = {
+                "name": item.get("name", ""),
+                "direction": item.get("direction", "maximize"),
+                "weight": item.get("weight", 1.0),
+            }
+            if item.get("hard_min") is not None:
+                metric["hard_min"] = item["hard_min"]
+            if item.get("hard_max") is not None:
+                metric["hard_max"] = item["hard_max"]
+            migrated.append(metric)
+
+    for item in legacy.get("safety") or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name", "")
+        if not name or any(m.get("name") == name for m in migrated):
+            continue
+        metric = {
+            "name": name,
+            "direction": item.get("direction", "minimize"),
+            "weight": item.get("weight", 0.0),
+        }
+        if item.get("hard_min") is not None:
+            metric["hard_min"] = item["hard_min"]
+        if item.get("hard_max") is not None:
+            metric["hard_max"] = item["hard_max"]
+        migrated.append(metric)
+
+    if migrated:
+        evaluation["metrics"] = migrated
+        result["evaluation"] = evaluation
     return result
