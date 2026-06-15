@@ -332,6 +332,7 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
         system_prompt=sys_prompt,
         user_prompt=user_prompt,
         max_tokens=4096,
+        response_format="text" if use_context else "json",
     )
 
     total_calls = state.get("total_llm_calls", 0) + 1
@@ -377,6 +378,7 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
             system_prompt=retry_sys,
             user_prompt=retry_user,
             max_tokens=4096,
+            response_format="text" if use_context else "json",
         )
         total_calls += 1
 

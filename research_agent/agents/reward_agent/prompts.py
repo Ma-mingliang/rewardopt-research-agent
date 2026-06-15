@@ -66,7 +66,7 @@ OUTPUT FORMAT — output ONLY this, nothing else:
 
 --- a/{target_file}
 +++ b/{target_file}
-@@ -{start},{count} +{start},{count} @@
+@@ -{{start}},{{count}} +{{start}},{{count}} @@
  <context line>
 -<removed line>
 +<added line>
