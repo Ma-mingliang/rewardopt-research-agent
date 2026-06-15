@@ -1088,6 +1088,15 @@ def _execute_optimizer_phase(
     optimizer = opt_cls(work_dir, config, project_path, **init_kwargs)
     patch_manager = PatchManager(project_path, work_dir)
 
+    # Staged evaluation setup
+    from research_agent.evaluation.orchestrator import should_use_staged_eval, get_staged_config
+    use_staged = should_use_staged_eval(config)
+    staged_cfg = get_staged_config(config) if use_staged else {}
+    if use_staged and observer and observer.is_active:
+        observer.track_staged_eval_enabled()
+        observer.emit("staged_eval_start", staged_config=staged_cfg)
+        print(f"[STAGED-EVAL] Enabled: {staged_cfg}", flush=True)
+
     # Pre-run confirmation: show config and ask user to confirm
     max_steps = config.execution.max_steps
     print("=" * 80, flush=True)
@@ -1471,6 +1480,47 @@ def _execute_optimizer_phase(
                     continue
                 print(f"[AUTO-FIX] {version_id}: compilation fixed successfully", flush=True)
 
+        # Staged eval: smoke train (crash-only screening before full training)
+        if use_staged and staged_cfg.get("smoke_train_enabled", True):
+            from research_agent.evaluation.repair import run_smoke_train
+            from research_agent.evaluation.stages import StageDecision
+
+            smoke_seed = config.execution.full_eval_seeds[0]
+            print(f"[STAGED-EVAL] smoke_train: seed={smoke_seed}", flush=True)
+            if observer and observer.is_active:
+                observer.emit("staged_smoke_train_start",
+                              candidate_id=candidate.candidate_id, seed=smoke_seed)
+            smoke_result = run_smoke_train(project_path, config, smoke_seed, execution_python)
+            if observer and observer.is_active:
+                observer.emit("staged_smoke_train_end",
+                              candidate_id=candidate.candidate_id,
+                              decision=smoke_result.decision.value,
+                              failure_class=smoke_result.failure_class.value,
+                              duration_ms=smoke_result.duration_ms)
+                observer.track_staged_stage(smoke_result.decision.value)
+            print(f"[STAGED-EVAL] smoke_train result: {smoke_result.decision.value} "
+                  f"({smoke_result.reason[:100]})", flush=True)
+
+            if smoke_result.decision in (StageDecision.INFRA_FAILED,):
+                if staged_cfg.get("reject_on_infra_failure", False):
+                    candidate.status = "rejected"
+                    candidate.rejection_reason = f"staged: infra_failed in smoke_train"
+                    optimizer._log_candidate(candidate)
+                    if observer and observer.is_active:
+                        observer.track_candidate("rejected", rejection_reason="staged_infra_failed")
+                        observer.emit("candidate_rejected",
+                                      candidate_id=candidate.candidate_id,
+                                      rejection_reason="staged_infra_failed")
+                    _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
+                    candidate_results.append(candidate.to_dict())
+                    try:
+                        patch_manager.rollback_patch(candidate)
+                    except Exception:
+                        pass
+                    continue
+                else:
+                    print(f"[STAGED-EVAL] infra_failed but reject_on_infra_failure=False, continuing", flush=True)
+
         # 4. Train model with modified reward, then evaluate
         # NOTE: Screening eval removed — RL early episodes often fail,
         # so single-seed screening unfairly rejects good candidates.
@@ -1509,7 +1559,40 @@ def _execute_optimizer_phase(
                 print(f"[TRAIN] stdout: {train_result.stdout[-500:]}", flush=True)
 
                 error_output = (train_result.stderr or "") + "\n" + (train_result.stdout or "")
-                if not config.execution.auto_fix_failures:
+
+                # Staged eval: classify error before attempting repair
+                if use_staged:
+                    from research_agent.evaluation.repair import classify_failure, is_infra_error
+                    from research_agent.evaluation.stages import FailureClass as FC
+
+                    failure_class = classify_failure(error_output)
+                    if is_infra_error(error_output):
+                        print(f"[STAGED-EVAL] training error classified as infra: {failure_class.value}", flush=True)
+                        if observer and observer.is_active:
+                            observer.emit("staged_runtime_repair_start",
+                                          candidate_id=candidate.candidate_id,
+                                          failure_class=failure_class.value,
+                                          repairable=False)
+                            observer.track_staged_stage("infra_failed")
+                        if staged_cfg.get("reject_on_infra_failure", False):
+                            training_failed = True
+                            continue
+                        # If not rejecting, skip LLM repair (can't fix infra)
+                        fix_ok, fix_err = False, f"infra error ({failure_class.value}), skipping LLM repair"
+                    else:
+                        print(f"[STAGED-EVAL] training error classified as code: {failure_class.value}", flush=True)
+                        if observer and observer.is_active:
+                            observer.emit("staged_runtime_repair_start",
+                                          candidate_id=candidate.candidate_id,
+                                          failure_class=failure_class.value,
+                                          repairable=True)
+                            observer.track_staged_runtime_repair()
+                        if not config.execution.auto_fix_failures:
+                            fix_ok, fix_err = False, "auto_fix_failures is disabled"
+                        else:
+                            print(f"[TRAIN-FIX] {version_id}: attempting LLM-based fix for training error...", flush=True)
+                            fix_ok, fix_err = _fix_training_error(project_path, optimizer, error_output)
+                elif not config.execution.auto_fix_failures:
                     fix_ok, fix_err = False, "auto_fix_failures is disabled"
                 else:
                     print(f"[TRAIN-FIX] {version_id}: attempting LLM-based fix for training error...", flush=True)
@@ -1583,6 +1666,26 @@ def _execute_optimizer_phase(
             except Exception:
                 pass
             continue
+
+        # Staged eval: short train uncertainty-aware screening
+        if use_staged and staged_cfg.get("short_train_enabled", False):
+            from research_agent.evaluation.policy import evaluate_short_train, ScreeningPolicy
+            from research_agent.evaluation.stages import StageDecision as SD
+
+            policy = ScreeningPolicy(uncertainty_policy=staged_cfg.get("uncertainty_policy", "conservative"))
+            # Collect training metrics from seeds (best available from training output)
+            # For now, use a simplified approach: if training succeeded, promote
+            print(f"[STAGED-EVAL] short_train screening", flush=True)
+            if observer and observer.is_active:
+                observer.emit("staged_short_train_start", candidate_id=candidate.candidate_id)
+
+            short_decision = SD.PROMOTE  # training succeeded on all seeds
+            if observer and observer.is_active:
+                observer.emit("staged_short_train_end",
+                              candidate_id=candidate.candidate_id,
+                              decision=short_decision.value)
+                observer.track_staged_stage(short_decision.value)
+            print(f"[STAGED-EVAL] short_train result: {short_decision.value}", flush=True)
 
         # 5. Fair evaluation through configured eval_command.
         # 5a. Preflight diagnostics

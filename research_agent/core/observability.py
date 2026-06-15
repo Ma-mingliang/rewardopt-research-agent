@@ -85,6 +85,17 @@ class RunObserver:
         self._method_pool_selected = 0
         self._method_pool_categories_used: list[str] = []
 
+        # Staged evaluation counters
+        self._staged_eval_enabled = False
+        self._staged_static_repairs = 0
+        self._staged_runtime_repairs = 0
+        self._staged_smoke_rejected = 0
+        self._staged_infra_failures = 0
+        self._staged_short_train_promoted = 0
+        self._staged_short_train_deferred = 0
+        self._staged_medium_train_promoted = 0
+        self._staged_total_stages_run = 0
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -180,6 +191,28 @@ class RunObserver:
         self._method_pool_selected = selected_count
         self._method_pool_categories_used = categories_used
 
+    def track_staged_eval_enabled(self) -> None:
+        """Mark staged evaluation as enabled for this run."""
+        self._staged_eval_enabled = True
+
+    def track_staged_stage(self, decision: str) -> None:
+        """Track a staged evaluation stage completion."""
+        self._staged_total_stages_run += 1
+        if decision == "repair":
+            self._staged_static_repairs += 1
+        elif decision == "reject_catastrophic":
+            self._staged_smoke_rejected += 1
+        elif decision == "infra_failed":
+            self._staged_infra_failures += 1
+        elif decision == "promote":
+            self._staged_short_train_promoted += 1
+        elif decision == "defer":
+            self._staged_short_train_deferred += 1
+
+    def track_staged_runtime_repair(self) -> None:
+        """Track a runtime repair attempt."""
+        self._staged_runtime_repairs += 1
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -238,6 +271,14 @@ class RunObserver:
             "method_pool_total": self._method_pool_total,
             "method_pool_selected": self._method_pool_selected,
             "method_pool_categories_used": self._method_pool_categories_used,
+            "staged_eval_enabled": self._staged_eval_enabled,
+            "staged_total_stages_run": self._staged_total_stages_run,
+            "staged_static_repairs": self._staged_static_repairs,
+            "staged_runtime_repairs": self._staged_runtime_repairs,
+            "staged_smoke_rejected": self._staged_smoke_rejected,
+            "staged_infra_failures": self._staged_infra_failures,
+            "staged_short_train_promoted": self._staged_short_train_promoted,
+            "staged_short_train_deferred": self._staged_short_train_deferred,
             "event_log": "events.jsonl",
         }
         if extra:

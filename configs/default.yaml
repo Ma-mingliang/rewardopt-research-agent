@@ -129,6 +129,16 @@ execution:
     - 42
   timeout_seconds_per_seed: 3600
 
+staged_evaluation:
+  enabled: false
+  max_static_repair_attempts: 3
+  max_runtime_repair_attempts: 2
+  smoke_train_enabled: true
+  short_train_enabled: false
+  medium_train_enabled: false
+  reject_on_infra_failure: false
+  uncertainty_policy: conservative
+
 git:
   auto_commit_best: true
   auto_push_best: false

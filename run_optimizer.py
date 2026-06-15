@@ -27,6 +27,10 @@ from research_agent.core.version_tracker import VersionTracker
 @click.option("--run-log-dir", default=None, type=str, help="Directory for run logs (default: .research-agent/runs)")
 @click.option("--reward-method-pool", default=None, type=click.Path(), help="Path to method_pool.jsonl for rich context injection")
 @click.option("--reward-method-top-k", default=None, type=int, help="Number of methods to inject as context (default: 5)")
+@click.option("--staged-eval", is_flag=True, help="Enable staged evaluation pipeline")
+@click.option("--max-static-repair-attempts", default=None, type=int, help="Max static repair attempts (default: 3)")
+@click.option("--max-runtime-repair-attempts", default=None, type=int, help="Max runtime repair attempts (default: 2)")
+@click.option("--short-train/--no-short-train", default=None, help="Enable/disable short train screening")
 def main(
     project: str,
     max_iterations: int | None,
@@ -37,6 +41,10 @@ def main(
     run_log_dir: str | None,
     reward_method_pool: str | None,
     reward_method_top_k: int | None,
+    staged_eval: bool,
+    max_static_repair_attempts: int | None,
+    max_runtime_repair_attempts: int | None,
+    short_train: bool | None,
 ):
     """Run optimizer with version tracking.
 
@@ -60,6 +68,14 @@ def main(
         config.optimizer.method_pool_path = reward_method_pool
     if reward_method_top_k is not None:
         config.optimizer.method_top_k = reward_method_top_k
+    if staged_eval:
+        config.staged_evaluation.enabled = True
+    if max_static_repair_attempts is not None:
+        config.staged_evaluation.max_static_repair_attempts = max_static_repair_attempts
+    if max_runtime_repair_attempts is not None:
+        config.staged_evaluation.max_runtime_repair_attempts = max_runtime_repair_attempts
+    if short_train is not None:
+        config.staged_evaluation.short_train_enabled = short_train
 
     # Validate --optimizer override if provided
     if optimizer is not None:

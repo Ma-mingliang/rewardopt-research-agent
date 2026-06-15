@@ -165,6 +165,19 @@ class OptimizerConfig(BaseModel):
     method_top_k: int = 5
 
 
+class StagedEvaluationConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    max_static_repair_attempts: int = 3
+    max_runtime_repair_attempts: int = 2
+    smoke_train_enabled: bool = True
+    short_train_enabled: bool = False
+    medium_train_enabled: bool = False
+    reject_on_infra_failure: bool = False
+    uncertainty_policy: str = "conservative"
+
+
 class AutoConfigConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -214,6 +227,7 @@ class AgentConfig(BaseModel):
     git: GitConfig = Field(default_factory=GitConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
+    staged_evaluation: StagedEvaluationConfig = Field(default_factory=StagedEvaluationConfig)
     autoconfig: AutoConfigConfig = Field(default_factory=AutoConfigConfig)
 
 
