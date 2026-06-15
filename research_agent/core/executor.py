@@ -1184,6 +1184,8 @@ def _execute_optimizer_phase(
     pool_path_str = config.optimizer.method_pool_path
     if pool_path_str:
         pool_file = Path(pool_path_str)
+        if pool_file.is_dir():
+            pool_file = pool_file / "method_pool.jsonl"
     else:
         pool_file = Path(__file__).resolve().parent.parent / "reward_paper_pool" / "method_pool.jsonl"
     if pool_file.exists():

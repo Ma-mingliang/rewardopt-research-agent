@@ -227,7 +227,7 @@ def main(
         observer.emit("baseline_guard_manifest_missing", manifest_path=str(manifest_path))
 
     # Initialize sampler
-    sampler = _init_sampler(work_dir)
+    sampler = _init_sampler(work_dir, config.optimizer.method_pool_path)
     if sampler is None:
         print("[ERROR] Paper pool not found. Cannot run optimizer.", flush=True)
         sys.exit(1)

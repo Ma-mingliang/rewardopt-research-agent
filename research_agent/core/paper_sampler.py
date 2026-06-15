@@ -221,10 +221,16 @@ class PaperSampler:
     # ── private helpers ──────────────────────────────────
 
     def _sorted_categories(self) -> list[str]:
-        """Sort taxonomy categories by priority (S > A > B), then by id."""
-        cats = list(self._taxonomy.items())
-        cats.sort(key=lambda item: (_PRIORITY_ORDER.get(item[1].get("priority", "B"), 2), item[0]))
-        return [cat_id for cat_id, _ in cats]
+        """Sort taxonomy categories by priority (S > A > B), then by id.
+
+        Falls back to categories from methods_by_category if taxonomy is empty.
+        """
+        if self._taxonomy:
+            cats = list(self._taxonomy.items())
+            cats.sort(key=lambda item: (_PRIORITY_ORDER.get(item[1].get("priority", "B"), 2), item[0]))
+            return [cat_id for cat_id, _ in cats]
+        # Fallback: use categories from method pool, sorted alphabetically
+        return sorted(self._methods_by_category.keys())
 
     def _enrich_with_paper(self, method: dict) -> dict:
         """Attach source paper info to a method dict."""
