@@ -113,6 +113,19 @@ class RunObserver:
         self._repair_strategy_counts: dict[str, int] = {}
         self._last_patch_repair_error_signature: str | None = None
 
+        # Context-grounded proposal tracking (v0.7.3)
+        self._context_grounded_proposal_enabled: bool = False
+        self._proposal_context_file: str | None = None
+        self._proposal_context_function: str | None = None
+        self._proposal_context_start_line: int = 0
+        self._proposal_context_end_line: int = 0
+        self._initial_patch_self_check_passed: int = 0
+        self._initial_patch_self_check_failure_reason: str | None = None
+        self._initial_patch_line_count: int = 0
+        self._initial_patch_modified_files: int = 0
+        self._initial_patch_too_large_count: int = 0
+        self._initial_patch_outside_allowed_context_count: int = 0
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -269,6 +282,41 @@ class RunObserver:
         self._max_patch_apply_repair_attempts = max_attempts
         self._max_same_error_repair_attempts = max_same_error
 
+    def track_context_grounded_proposal(
+        self,
+        enabled: bool = False,
+        file: str = "",
+        function: str = "",
+        start_line: int = 0,
+        end_line: int = 0,
+        self_check_passed: bool = False,
+        self_check_failure_reason: str = "",
+        patch_line_count: int = 0,
+        too_large: bool = False,
+        outside_context: bool = False,
+    ) -> None:
+        """Track context-grounded proposal for summary."""
+        if enabled:
+            self._context_grounded_proposal_enabled = True
+        if file:
+            self._proposal_context_file = file
+        if function:
+            self._proposal_context_function = function
+        if start_line:
+            self._proposal_context_start_line = start_line
+        if end_line:
+            self._proposal_context_end_line = end_line
+        if self_check_passed:
+            self._initial_patch_self_check_passed += 1
+        if self_check_failure_reason:
+            self._initial_patch_self_check_failure_reason = self_check_failure_reason
+        if patch_line_count:
+            self._initial_patch_line_count = patch_line_count
+        if too_large:
+            self._initial_patch_too_large_count += 1
+        if outside_context:
+            self._initial_patch_outside_allowed_context_count += 1
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -348,6 +396,16 @@ class RunObserver:
             "max_same_error_repair_attempts": self._max_same_error_repair_attempts,
             "repair_strategy_counts": dict(self._repair_strategy_counts),
             "last_patch_repair_error_signature": self._last_patch_repair_error_signature,
+            "context_grounded_proposal_enabled": self._context_grounded_proposal_enabled,
+            "proposal_context_file": self._proposal_context_file,
+            "proposal_context_function": self._proposal_context_function,
+            "proposal_context_start_line": self._proposal_context_start_line,
+            "proposal_context_end_line": self._proposal_context_end_line,
+            "initial_patch_self_check_passed": self._initial_patch_self_check_passed,
+            "initial_patch_self_check_failure_reason": self._initial_patch_self_check_failure_reason,
+            "initial_patch_line_count": self._initial_patch_line_count,
+            "initial_patch_too_large_count": self._initial_patch_too_large_count,
+            "initial_patch_outside_allowed_context_count": self._initial_patch_outside_allowed_context_count,
             "event_log": "events.jsonl",
         }
         if extra:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class RewardAgentState(TypedDict, total=False):
@@ -20,6 +20,9 @@ class RewardAgentState(TypedDict, total=False):
     # Code context
     reward_code: str
     file_name: str
+
+    # Context-grounded proposal (v0.7.3)
+    proposal_context: Any  # ProposalContext or None
 
     # Proposal
     current_diff: str | None

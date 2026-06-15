@@ -240,6 +240,7 @@ def _repair_patch_diff(
     candidate_id: str = "",
     attempt: int = 1,
     error_sig: str = "",
+    proposal_context=None,
 ) -> str | None:
     """Use LLM to repair a failed patch diff with syntax-aware context.
 
@@ -257,6 +258,7 @@ def _repair_patch_diff(
         candidate_id: Candidate ID for logging.
         attempt: Current attempt number.
         error_sig: Error signature for logging.
+        proposal_context: ProposalContext for context-grounded repair.
 
     Returns:
         Repaired diff string if successful, None if all attempts fail.
@@ -275,6 +277,23 @@ def _repair_patch_diff(
     if project_path and error_line:
         baseline_context = extract_local_context(project_path / target_file, error_line, radius=25)
 
+    # Enrich context with ProposalContext if available (v0.7.3)
+    enriched_idea = reward_idea
+    if proposal_context and strategy == RepairStrategy.IDEA_REGENERATION_FROM_BASELINE:
+        ctx_lines = [
+            f"## Editable Reward Function Context",
+            f"Function: {proposal_context.function_name} (lines {proposal_context.function_start_line}-{proposal_context.function_end_line})",
+            f"Class: {proposal_context.class_name}",
+            f"Base indentation: {proposal_context.indent_unit} {proposal_context.indentation_style}",
+            f"Existing reward terms: {', '.join(proposal_context.existing_reward_terms)}",
+            f"",
+            f"## Line-Numbered Source (edit ONLY within these lines)",
+            f"```",
+            proposal_context.line_numbered_context,
+            f"```",
+        ]
+        enriched_idea = reward_idea + "\n\n" + "\n".join(ctx_lines)
+
     # Build structured error
     repair_error = PatchRepairError(
         error_type=error_type,
@@ -290,7 +309,7 @@ def _repair_patch_diff(
     sys_prompt, user_prompt = build_syntax_repair_prompt(
         repair_error,
         strategy=strategy,
-        reward_idea=reward_idea,
+        reward_idea=enriched_idea,
         method_pool_context=method_pool_context,
         attempt=attempt,
     )
@@ -1382,6 +1401,14 @@ def _execute_optimizer_phase(
         allowed = [f.get("file", "env.py") if isinstance(f, dict) else str(f)
                    for f in (phase.get("allowed_changes") or ["env.py"])]
 
+        # Extract ProposalContext for context-grounded repair (v0.7.3)
+        proposal_ctx = None
+        try:
+            from research_agent.core.proposal_context import extract_editable_reward_context
+            proposal_ctx = extract_editable_reward_context(project_path, allowed)
+        except Exception:
+            pass
+
         if observer and observer.is_active:
             observer.emit("patch_repair_start",
                           candidate_id=candidate.candidate_id,
@@ -1456,6 +1483,7 @@ def _execute_optimizer_phase(
                 candidate_id=candidate.candidate_id,
                 attempt=attempt_num,
                 error_sig=error_sig,
+                proposal_context=proposal_ctx,
             )
             if repaired:
                 # Validate repaired diff on temp copy before accepting

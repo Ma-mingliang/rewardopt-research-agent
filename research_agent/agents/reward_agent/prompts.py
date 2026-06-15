@@ -44,6 +44,71 @@ Example format:
 +                    alpha = 3.0
                      potential_current = -alpha * current_error"""
 
+
+# --- Context-grounded proposal prompts (v0.7.3) ---
+
+CONTEXT_PROPOSE_SYSTEM_PROMPT = """You are a reward function optimizer for RL and control projects.
+You are given the EXACT source code of a single reward function with line numbers.
+Your task: propose a MINIMAL local edit to improve the reward function.
+
+HARD RULES:
+- Only modify the reward function shown below. Do NOT touch any other code.
+- The unified diff MUST target the exact line numbers provided.
+- Every added line (+) MUST use the EXACT base indentation shown (4 spaces per level for this function).
+- Do NOT alter: observation space, action space, reset logic, train/eval logic, imports, model structure, seed, metrics.
+- Do NOT create new top-level functions or classes.
+- Do NOT add new imports.
+- If adding numerical terms, guard divisions/log/sqrt with epsilon (e.g., x / (val + 1e-8)).
+- Keep the diff SMALL: 5-30 lines changed maximum.
+- Only output a unified diff. No markdown, no explanation, no JSON wrapper.
+
+OUTPUT FORMAT — output ONLY this, nothing else:
+
+--- a/{target_file}
++++ b/{target_file}
+@@ -{start},{count} +{start},{count} @@
+ <context line>
+-<removed line>
++<added line>
+ <context line>"""
+
+
+CONTEXT_PROPOSE_USER_PROMPT = """## Reward Function: {function_name}
+## File: {target_file}
+## Class: {class_name}
+## Lines: {function_start_line}-{function_end_line}
+## Base indentation: {indent_unit} {indent_style} (level {base_indent})
+
+## Line-Numbered Source (edit ONLY within >>> lines)
+```
+{line_numbered_context}
+```
+
+## Existing Reward Terms
+{existing_reward_terms}
+
+## Baseline Metrics
+{baseline}
+
+## Research Ideas
+{ideas}
+
+## Method Pool Context
+{method_context}
+
+## Allowed Changes
+{allowed}
+
+## Forbidden Changes
+{forbidden}
+
+## Instructions
+Propose ONE SMALL modification (5-30 lines) to the reward function above.
+Focus on the research idea. Use the exact line numbers from the source.
+Ensure every added line matches the base indentation ({base_indent} spaces for method body).
+
+Output ONLY a unified diff. No markdown fences, no explanation."""
+
 FIX_SYSTEM_PROMPT = """You are a Python code fixer. Given the original code and a diff that failed to apply,
 generate a corrected diff that will apply cleanly and compile without errors.
 
