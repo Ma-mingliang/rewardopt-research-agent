@@ -174,7 +174,10 @@ The repair prompt now includes:
 | `tests/test_eval_diagnostics.py` | 42 passed |
 | `tests/test_observability.py` | 22 passed |
 | `tests/test_staged_evaluation.py` | 26 passed |
-| Full suite (`tests/ -q`) | **341 passed, 1 failed** (pre-existing Windows path issue) |
+| **New tests total** | **53 passed** |
+| Full suite (`tests/ -q`) | **341 passed, 1 failed** |
+
+**Failure classification:** The 1 failure is `tests/test_smoke.py::test_initial_state` — a pre-existing Windows path issue (`D:\project` vs `/project`). This failure exists on the `main` branch before v0.7.1. No evidence v0.7.1 introduced or worsened this failure.
 
 ---
 
