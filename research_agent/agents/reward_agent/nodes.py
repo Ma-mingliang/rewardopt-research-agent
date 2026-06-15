@@ -112,6 +112,7 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
     allowed = state.get("allowed_changes", [])
     baseline_str = format_baseline(state.get("baseline_metrics", {}))
     ideas_str = format_ideas(state.get("ideas", []))
+    method_context = state.get("method_pool_context", "")
     code = state.get("reward_code", "")
     file_name = state.get("file_name", "env.py")
     forbidden = state.get("forbidden_changes", [])
@@ -125,6 +126,7 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
             allowed=allowed,
             forbidden=forbidden,
             ideas=ideas_str,
+            method_context=method_context,
         ),
         max_tokens=4096,
     )

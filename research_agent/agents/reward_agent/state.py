@@ -40,6 +40,10 @@ class RewardAgentState(TypedDict, total=False):
     max_total_llm_calls: int
     last_error: str | None
 
+    # Method pool context
+    method_pool_context: str
+    method_pool_ids: list[str]
+
     # Output
     final_candidate_status: str  # "ready" | "noop" | "exhausted"
     patch_diff: str | None

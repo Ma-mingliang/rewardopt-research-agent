@@ -26,6 +26,9 @@ Forbidden changes: {forbidden}
 Research ideas to consider:
 {ideas}
 
+Method pool context (reference methods from literature):
+{method_context}
+
 Propose ONE SMALL modification (5-15 lines changed). Return JSON:
 {{"description": "<what you changed>", "diff": "<unified diff>", "rationale": "<why this should improve metrics>"}}
 

@@ -15,6 +15,12 @@ from research_agent.core.config import AgentConfig
 from research_agent.core.execution_env import ExecutionEnv, resolve_execution_env
 from research_agent.optimizers.base import BaseOptimizer, Candidate, normalize_allowed_changes
 from research_agent.optimizers.reward.reward_patch_utils import build_source_meta
+from research_agent.reward_methods.formatter import (
+    build_source_meta_from_records,
+    format_method_context,
+)
+from research_agent.reward_methods.schema import RewardMethodRecord
+from research_agent.reward_methods.selector import MethodSelector
 
 
 class LangGraphRewardOptimizer(BaseOptimizer):
@@ -53,6 +59,7 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         phase: dict,
         baseline_metrics: dict[str, dict[str, float]],
         ideas: list[dict] | None = None,
+        method_pool: list[RewardMethodRecord] | None = None,
     ) -> Candidate:
         """Propose a reward function modification via LangGraph agent.
 
@@ -80,6 +87,20 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         candidate_id = self.next_candidate_id()
         source_meta = build_source_meta(ideas or [])
 
+        # Process method pool for rich context injection
+        method_pool_context = ""
+        method_pool_ids: list[str] = []
+        if method_pool:
+            active_cats = self.config.optimizer.active_categories
+            top_k = self.config.optimizer.method_top_k
+            selector = MethodSelector(method_pool)
+            selected = selector.select(categories=active_cats or None, top_k=top_k)
+            method_pool_context = format_method_context(selected)
+            method_pool_ids = [m.method_id for m in selected]
+            pool_meta = build_source_meta_from_records(selected)
+            source_meta["method_pool_method_ids"] = pool_meta["source_method_ids"]
+            source_meta["method_pool_categories"] = pool_meta["source_categories"]
+
         if self._mock_llm:
             if self._observer and self._observer.is_active:
                 self._observer.emit("propose_candidate",
@@ -105,6 +126,8 @@ class LangGraphRewardOptimizer(BaseOptimizer):
             "candidate_id": candidate_id,
             "source_meta": source_meta,
             "execution_python": self._execution_env.python_executable,
+            "method_pool_context": method_pool_context,
+            "method_pool_ids": method_pool_ids,
         }
 
         # Invoke the graph

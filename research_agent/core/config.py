@@ -161,6 +161,8 @@ class OptimizerConfig(BaseModel):
 
     active_categories: list[str] = Field(default_factory=list)
     methods_per_category: int = 2
+    method_pool_path: str = ""
+    method_top_k: int = 5
 
 
 class AutoConfigConfig(BaseModel):

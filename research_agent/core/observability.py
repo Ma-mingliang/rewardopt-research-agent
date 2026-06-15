@@ -80,6 +80,11 @@ class RunObserver:
         self._last_failed_eval_stdout_path: str | None = None
         self._last_failed_eval_stderr_path: str | None = None
 
+        # Method pool counters
+        self._method_pool_total = 0
+        self._method_pool_selected = 0
+        self._method_pool_categories_used: list[str] = []
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -164,6 +169,17 @@ class RunObserver:
             if stderr_path:
                 self._last_failed_eval_stderr_path = stderr_path
 
+    def track_method_pool_usage(
+        self,
+        total_available: int,
+        selected_count: int,
+        categories_used: list[str],
+    ) -> None:
+        """Track method pool usage for summary."""
+        self._method_pool_total = total_available
+        self._method_pool_selected = selected_count
+        self._method_pool_categories_used = categories_used
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -219,6 +235,9 @@ class RunObserver:
             "last_failed_eval_repro_command": self._last_failed_eval_repro_command,
             "last_failed_eval_stdout_path": self._last_failed_eval_stdout_path,
             "last_failed_eval_stderr_path": self._last_failed_eval_stderr_path,
+            "method_pool_total": self._method_pool_total,
+            "method_pool_selected": self._method_pool_selected,
+            "method_pool_categories_used": self._method_pool_categories_used,
             "event_log": "events.jsonl",
         }
         if extra:

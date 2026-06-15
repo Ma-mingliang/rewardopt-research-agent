@@ -25,6 +25,8 @@ from research_agent.core.version_tracker import VersionTracker
 @click.option("--execution-python", default=None, type=str, help="Python executable for project code execution")
 @click.option("--optimizer", default=None, type=str, help="Override optimizer (e.g. reward_langgraph)")
 @click.option("--run-log-dir", default=None, type=str, help="Directory for run logs (default: .research-agent/runs)")
+@click.option("--reward-method-pool", default=None, type=click.Path(), help="Path to method_pool.jsonl for rich context injection")
+@click.option("--reward-method-top-k", default=None, type=int, help="Number of methods to inject as context (default: 5)")
 def main(
     project: str,
     max_iterations: int | None,
@@ -33,6 +35,8 @@ def main(
     execution_python: str | None,
     optimizer: str | None,
     run_log_dir: str | None,
+    reward_method_pool: str | None,
+    reward_method_top_k: int | None,
 ):
     """Run optimizer with version tracking.
 
@@ -50,6 +54,12 @@ def main(
 
     config = load_config(work_dir)
     state = read_state_json(work_dir)
+
+    # Apply CLI overrides to config (CLI > config > default)
+    if reward_method_pool is not None:
+        config.optimizer.method_pool_path = reward_method_pool
+    if reward_method_top_k is not None:
+        config.optimizer.method_top_k = reward_method_top_k
 
     # Validate --optimizer override if provided
     if optimizer is not None:

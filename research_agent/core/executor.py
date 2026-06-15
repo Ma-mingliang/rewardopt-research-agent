@@ -668,7 +668,7 @@ def run_plan(work_dir: Path, config: AgentConfig, mock_llm: bool = False, execut
     ideas = _load_ideas(work_dir)
 
     # Initialize paper sampler for iterative method selection
-    sampler = _init_sampler(work_dir)
+    sampler = _init_sampler(work_dir, config.optimizer.method_pool_path)
 
     # Execute phases in order
     phase_results: list[dict] = []
@@ -784,7 +784,7 @@ def run_phase(work_dir: Path, config: AgentConfig, phase_id: str, mock_llm: bool
     })
 
     ideas = _load_ideas(work_dir)
-    sampler = _init_sampler(work_dir)
+    sampler = _init_sampler(work_dir, config.optimizer.method_pool_path)
     result = _execute_phase(work_dir, config, target_phase, project_path, resource_usage, ideas, sampler, mock_llm,
                              execution_python=execution_python)
 
@@ -1196,6 +1196,28 @@ def _execute_optimizer_phase(
     # Initialize version tracker
     version_tracker = VersionTracker(work_dir)
 
+    # Load method pool for rich context injection
+    method_pool = None
+    from research_agent.reward_methods import load_method_pool
+    pool_path_str = config.optimizer.method_pool_path
+    if pool_path_str:
+        pool_file = Path(pool_path_str)
+    else:
+        pool_file = Path(__file__).resolve().parent.parent / "reward_paper_pool" / "method_pool.jsonl"
+    if pool_file.exists():
+        method_pool = load_method_pool(pool_file)
+        if method_pool and observer and observer.is_active:
+            categories = sorted(set(m.category for m in method_pool))
+            observer.emit("method_pool_loaded",
+                          total_methods=len(method_pool),
+                          categories=categories,
+                          pool_path=str(pool_file))
+            observer.track_method_pool_usage(
+                total_available=len(method_pool),
+                selected_count=0,
+                categories_used=categories,
+            )
+
     candidates_evaluated = 0
     best_candidate = None
     candidate_results = []
@@ -1239,7 +1261,10 @@ def _execute_optimizer_phase(
         version_checkpoint_dir = checkpoint_base / version_id
         version_checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        candidate = optimizer.propose_candidate(phase, baseline_metrics, candidate_ideas)
+        propose_kwargs: dict = {}
+        if method_pool:
+            propose_kwargs["method_pool"] = method_pool
+        candidate = optimizer.propose_candidate(phase, baseline_metrics, candidate_ideas, **propose_kwargs)
         resource_usage["candidates_proposed"] = resource_usage.get("candidates_proposed", 0) + 1
 
         if observer and observer.is_active:
@@ -1998,14 +2023,17 @@ def _load_ideas(work_dir: Path) -> list[dict]:
     return ideas
 
 
-def _init_sampler(work_dir: Path):
+def _init_sampler(work_dir: Path, pool_path: str = ""):
     """Initialize PaperSampler if the reward paper pool exists.
 
     Returns PaperSampler instance or None if pool is unavailable.
     """
     from research_agent.core.paper_sampler import PaperSampler
 
-    pool_dir = Path(__file__).resolve().parent.parent / "reward_paper_pool"
+    if pool_path:
+        pool_dir = Path(pool_path).resolve()
+    else:
+        pool_dir = Path(__file__).resolve().parent.parent / "reward_paper_pool"
     if not pool_dir.exists():
         return None
     try:
