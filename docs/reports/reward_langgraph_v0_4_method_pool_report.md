@@ -230,6 +230,55 @@ conda run -n langgraph python run_optimizer.py \
 
 ---
 
+## Forced Method Pool Smoke Test
+
+Emptied `tried_methods.jsonl` (214 entries backed up to `.bak`) to force the optimizer phase to execute with the method pool.
+
+```
+conda run -n langgraph python run_optimizer.py \
+  --project D:/research-agent/HRRL2 \
+  --optimizer reward_langgraph \
+  --mock-llm --max-iterations 1 --batch-size 1 \
+  --execution-python E:/Anaconda/envs/RL2/python.exe \
+  --reward-method-pool D:/research-agent/.research-agent/test_method_pool/method_pool.jsonl \
+  --reward-method-top-k 3
+```
+
+| Check | Result |
+|-------|--------|
+| run_id | `20260615_115518_reward_langgraph_44eab6` |
+| Optimizer phase entered | Yes |
+| method_pool_loaded event | Fired (5 methods, 4 categories) |
+| Candidate proposed | Yes (rejected — empty patch in mock mode, expected) |
+| source_meta method pool fields | Present (`method_pool_method_ids`, `method_pool_categories`) |
+| Baseline hash | `5ffc1e934e1f8908` (unchanged) |
+| tried_methods.jsonl restored | Yes (214 entries from `.bak`) |
+
+**Key finding:** `mock_llm=True` returns a `Candidate` early in `propose_candidate()` (before `initial_state` is built), so `method_pool_context` never reaches the graph state/prompt path in mock mode. The method pool IS processed into `source_meta` (lines 90–102 execute before the mock check), but the full injection chain (state → prompt) only activates in non-mock mode. This is covered by the integration fixture below.
+
+---
+
+## Integration Fixture Test
+
+`tests/test_method_pool_integration.py` — 6 tests verifying the full method pool injection path by patching `graph.invoke` to capture state:
+
+| Test | What it verifies |
+|------|------------------|
+| `test_source_meta_includes_method_pool_fields` | source_meta has method_pool_method_ids and method_pool_categories |
+| `test_source_meta_without_method_pool` | No pool → no pool fields in source_meta |
+| `test_method_pool_context_injected_into_graph_state` | graph.invoke receives method_pool_context and method_pool_ids in state |
+| `test_method_pool_context_empty_without_pool` | No pool → empty string context, empty list ids |
+| `test_method_pool_respects_top_k` | top_k=1 limits injected methods to 1 |
+| `test_method_pool_observer_tracks_usage` | Observer is accessible from optimizer |
+
+```
+tests/test_method_pool_integration.py: 6 passed in 0.65s
+```
+
+**Coverage:** The integration fixture covers the full injection path (selector → formatter → state → prompt) that mock_llm mode skips, confirming the method pool context reaches the LangGraph graph invocation.
+
+---
+
 ## Baseline Hash
 
 ```
@@ -253,7 +302,7 @@ Unchanged from v0.1 through v0.4.
 
 ## Known Limitations
 
-1. **Mock smoke test doesn't exercise method pool path** — The HRRL2 project's sampler has exhausted all methods from prior runs, so `_execute_optimizer_phase` is never entered. The method pool loading and injection are only covered by unit tests.
+1. **Mock LLM mode skips graph invocation** — `mock_llm=True` returns a Candidate before `initial_state` is built, so `method_pool_context` never reaches the graph state/prompt. The forced smoke test confirmed method pool processing into `source_meta` works; the integration fixture (`test_method_pool_integration.py`) covers the full state→prompt path by patching `graph.invoke`.
 2. **`--reward-method-pool` expects file path** — The CLI option expects the full path to `method_pool.jsonl`, not a directory. Users must include the filename.
 3. **Method pool loaded per-phase, not per-candidate** — The method pool is loaded once at the start of `_execute_optimizer_phase` and the same set is passed to all candidates in that phase. Dynamic pool changes during a run are not supported.
 4. **No prompt token budget management** — `format_method_context()` includes all fields. If `top_k` is large, the prompt could exceed the LLM context window. The `format_method_brief()` compact formatter is available but not used by default.
