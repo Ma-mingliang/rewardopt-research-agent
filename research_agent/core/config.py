@@ -5,8 +5,48 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+import os
+
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
+
+
+def load_dotenv(paths: list[Path] | None = None) -> dict[str, str]:
+    """Load .env files into os.environ. Shell non-empty values take precedence.
+
+    Args:
+        paths: .env file paths to try. Defaults to [cwd/.env, repo_root/.env].
+
+    Returns:
+        Dict of keys that were loaded from .env (only newly set or overridden empty).
+    """
+    if paths is None:
+        paths = [Path.cwd() / ".env", Path(__file__).parent.parent.parent / ".env"]
+
+    loaded: dict[str, str] = {}
+    for p in paths:
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if not key:
+                continue
+            # Shell non-empty value takes precedence over .env
+            existing = os.environ.get(key)
+            if existing is not None and existing != "":
+                continue
+            os.environ[key] = value
+            loaded[key] = value
+    return loaded
 
 
 class LLMConfig(BaseModel):

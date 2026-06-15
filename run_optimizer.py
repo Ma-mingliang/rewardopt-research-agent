@@ -11,7 +11,7 @@ from pathlib import Path
 
 import click
 
-from research_agent.core.config import load_config
+from research_agent.core.config import load_config, load_dotenv
 from research_agent.core.executor import _execute_optimizer_phase, _init_sampler, _load_plan
 from research_agent.core.state import read_state_json, write_state_json
 from research_agent.core.version_tracker import VersionTracker
@@ -53,6 +53,9 @@ def main(
     - logs/tried_methods.jsonl (machine-readable)
     - stdout (real-time with flush=True)
     """
+    # Load .env files before any LLM config is read
+    loaded = load_dotenv([Path.cwd() / ".env", Path(__file__).resolve().parent / ".env"])
+
     project_path = Path(project).resolve()
     work_dir = project_path / ".research-agent"
 
@@ -76,6 +79,20 @@ def main(
         config.staged_evaluation.max_runtime_repair_attempts = max_runtime_repair_attempts
     if short_train is not None:
         config.staged_evaluation.short_train_enabled = short_train
+
+    # Credential preflight: fail fast if real LLM requested but key is missing
+    if not mock_llm:
+        import os
+        api_key_env = config.llm.api_key_env
+        api_key = os.environ.get(api_key_env, "")
+        key_present = bool(api_key)
+        key_length = len(api_key)
+        key_source = "dotenv" if api_key_env in loaded else "shell_env"
+        print(f"[CREDENTIAL] key_present={key_present} key_source={key_source} key_length={key_length}", flush=True)
+        if not key_present:
+            print(f"[ERROR] Real LLM run requested but {api_key_env} is missing or empty.", flush=True)
+            print(f"Set it in environment or .env file.", flush=True)
+            sys.exit(1)
 
     # Validate --optimizer override if provided
     if optimizer is not None:

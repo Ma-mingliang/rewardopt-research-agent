@@ -1112,10 +1112,9 @@ def _execute_optimizer_phase(
     api_key_env = config.llm.api_key_env
     api_key = os.environ.get(api_key_env, "")
     if not api_key and not mock_llm:
-        print(f"\n[WARNING] {api_key_env} not set. LLM calls will fail.", flush=True)
-        mock_llm = True
-        optimizer._mock_llm = True
-        print(f"[OK] Using mock-llm mode", flush=True)
+        print(f"\n[ERROR] {api_key_env} not set or empty. Real LLM run requires a valid API key.", flush=True)
+        print(f"Set it in environment or .env file.", flush=True)
+        raise RuntimeError(f"{api_key_env} is missing or empty. Cannot proceed with real LLM run.")
     elif api_key:
         print(f"  API key: {api_key_env}={api_key[:8]}...", flush=True)
 
