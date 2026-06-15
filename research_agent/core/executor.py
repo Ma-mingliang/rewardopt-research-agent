@@ -1495,8 +1495,6 @@ def _execute_optimizer_phase(
                 observer.track_patch_repair(repeated_error=True)
             optimizer._log_candidate(candidate)
             _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
-            optimizer._log_candidate(candidate)
-            _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
             version_tracker.log_version(
                 version_id=version_id,
                 candidate_id=candidate.candidate_id,
