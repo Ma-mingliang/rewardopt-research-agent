@@ -96,6 +96,13 @@ class RunObserver:
         self._staged_medium_train_promoted = 0
         self._staged_total_stages_run = 0
 
+        # Baseline guard counters
+        self._baseline_guard_run = False
+        self._baseline_guard_passed = False
+        self._baseline_guard_failed = False
+        self._baseline_guard_drift_type: str | None = None
+        self._baseline_guard_manifest_path: str | None = None
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -213,6 +220,19 @@ class RunObserver:
         """Track a runtime repair attempt."""
         self._staged_runtime_repairs += 1
 
+    def track_baseline_guard(
+        self,
+        passed: bool,
+        drift_type: str = "none",
+        manifest_path: str = "",
+    ) -> None:
+        """Track baseline guard result for summary."""
+        self._baseline_guard_run = True
+        self._baseline_guard_passed = passed
+        self._baseline_guard_failed = not passed
+        self._baseline_guard_drift_type = drift_type if not passed else None
+        self._baseline_guard_manifest_path = manifest_path or None
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -279,6 +299,11 @@ class RunObserver:
             "staged_infra_failures": self._staged_infra_failures,
             "staged_short_train_promoted": self._staged_short_train_promoted,
             "staged_short_train_deferred": self._staged_short_train_deferred,
+            "baseline_guard_run": self._baseline_guard_run,
+            "baseline_guard_passed": self._baseline_guard_passed,
+            "baseline_guard_failed": self._baseline_guard_failed,
+            "baseline_guard_drift_type": self._baseline_guard_drift_type,
+            "baseline_guard_manifest_path": self._baseline_guard_manifest_path,
             "event_log": "events.jsonl",
         }
         if extra:

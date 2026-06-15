@@ -31,6 +31,10 @@ from research_agent.core.version_tracker import VersionTracker
 @click.option("--max-static-repair-attempts", default=None, type=int, help="Max static repair attempts (default: 3)")
 @click.option("--max-runtime-repair-attempts", default=None, type=int, help="Max runtime repair attempts (default: 2)")
 @click.option("--short-train/--no-short-train", default=None, help="Enable/disable short train screening")
+@click.option("--baseline-manifest", default=None, type=click.Path(),
+              help="Path to baseline manifest YAML (default: docs/baselines/hrrl2_operational_baseline.yaml)")
+@click.option("--accept-baseline-migration", is_flag=True, default=False,
+              help="Allow proceeding when env.py differs from manifest hash")
 def main(
     project: str,
     max_iterations: int | None,
@@ -45,6 +49,8 @@ def main(
     max_static_repair_attempts: int | None,
     max_runtime_repair_attempts: int | None,
     short_train: bool | None,
+    baseline_manifest: str | None,
+    accept_baseline_migration: bool,
 ):
     """Run optimizer with version tracking.
 
@@ -141,6 +147,84 @@ def main(
     print("Note: configuration confirmation will happen inside optimizer phase.", flush=True)
 
     observer.emit("run_start", phase="main")
+
+    # --- Baseline guard ---
+    from research_agent.core.baseline_guard import (
+        build_baseline_drift_error,
+        check_baseline_consistency,
+        load_baseline_manifest,
+    )
+    from research_agent.core.exceptions import BaselineDriftError
+
+    manifest_path = Path(baseline_manifest) if baseline_manifest else (
+        Path(__file__).resolve().parent / "docs" / "baselines" / "hrrl2_operational_baseline.yaml"
+    )
+
+    if manifest_path.exists():
+        try:
+            manifest = load_baseline_manifest(manifest_path)
+            auto_push = getattr(getattr(config, 'git', None), 'auto_push', False)
+            guard_result = check_baseline_consistency(
+                project_path=project_path,
+                manifest=manifest,
+                allow_migration=accept_baseline_migration,
+            )
+            guard_result.auto_push_detected = auto_push
+
+            observer.emit(
+                "baseline_guard_start",
+                manifest_path=str(manifest_path),
+                manifest_hash=manifest.accepted_operational_baseline_hash,
+                auto_push=auto_push,
+                allow_migration=accept_baseline_migration,
+            )
+
+            if not guard_result.ok:
+                observer.emit(
+                    "baseline_guard_failed",
+                    drift_type=guard_result.drift_type.value,
+                    env_hash=guard_result.env_hash,
+                    manifest_hash=guard_result.manifest_hash,
+                    auto_push=auto_push,
+                    allow_migration=accept_baseline_migration,
+                )
+                observer.emit(
+                    "baseline_drift_detected",
+                    drift_type=guard_result.drift_type.value,
+                    env_hash=guard_result.env_hash,
+                    artifact_hash=guard_result.artifact_hash,
+                    manifest_hash=guard_result.manifest_hash,
+                )
+                observer.track_baseline_guard(
+                    passed=False,
+                    drift_type=guard_result.drift_type.value,
+                    manifest_path=str(manifest_path),
+                )
+                observer.close()
+                print(build_baseline_drift_error(guard_result), flush=True)
+                raise BaselineDriftError(
+                    build_baseline_drift_error(guard_result),
+                    drift_type=guard_result.drift_type.value,
+                    env_hash=guard_result.env_hash,
+                    manifest_hash=guard_result.manifest_hash,
+                )
+            else:
+                observer.emit(
+                    "baseline_guard_pass",
+                    env_hash=guard_result.env_hash,
+                    manifest_hash=guard_result.manifest_hash,
+                )
+                observer.track_baseline_guard(
+                    passed=True,
+                    manifest_path=str(manifest_path),
+                )
+                print(f"[BASELINE GUARD] Passed. env_hash={guard_result.env_hash}", flush=True)
+        except FileNotFoundError:
+            print(f"[WARNING] Baseline manifest not found: {manifest_path}", flush=True)
+            observer.emit("baseline_guard_manifest_missing", manifest_path=str(manifest_path))
+    else:
+        print(f"[WARNING] Baseline manifest not found: {manifest_path}", flush=True)
+        observer.emit("baseline_guard_manifest_missing", manifest_path=str(manifest_path))
 
     # Initialize sampler
     sampler = _init_sampler(work_dir)

@@ -1118,34 +1118,8 @@ def _execute_optimizer_phase(
     elif api_key:
         print(f"  API key: {api_key_env}={api_key[:8]}...", flush=True)
 
-    # Initialize auto_push early for baseline verification
-    git_cfg = getattr(config, 'git', None)
-    auto_push = getattr(git_cfg, 'auto_push', False) if git_cfg else False
-
-    # Verify baseline_env.py consistency
-    baseline_env_path = work_dir / "artifacts" / "baseline_env.py"
-    current_env_path = project_path / "env.py"
-    if baseline_env_path.exists() and current_env_path.exists():
-        import hashlib
-        baseline_hash = hashlib.md5(baseline_env_path.read_bytes()).hexdigest()
-        current_hash = hashlib.md5(current_env_path.read_bytes()).hexdigest()
-        if baseline_hash != current_hash:
-            print(f"\n[WARNING] baseline_env.py differs from current env.py!", flush=True)
-            print(f"  baseline_env.py: {baseline_hash}", flush=True)
-            print(f"  current env.py:  {current_hash}", flush=True)
-            if auto_push:
-                # Auto-update in auto_push mode
-                import shutil
-                shutil.copy2(current_env_path, baseline_env_path)
-                print("[AUTO] baseline_env.py updated to match current env.py", flush=True)
-            else:
-                print("[WARNING] Continuing with mismatched baseline_env.py", flush=True)
-    elif not baseline_env_path.exists():
-        print(f"\n[WARNING] baseline_env.py not found in artifacts/", flush=True)
-        if current_env_path.exists():
-            import shutil
-            shutil.copy2(current_env_path, baseline_env_path)
-            print(f"[AUTO] Created baseline_env.py from current env.py", flush=True)
+    # v0.6.3+: Baseline guard runs in run_optimizer.py before iteration loop.
+    # Auto-push baseline sync removed to prevent silent migration.
 
     # Set active categories on sampler
     if sampler is not None:

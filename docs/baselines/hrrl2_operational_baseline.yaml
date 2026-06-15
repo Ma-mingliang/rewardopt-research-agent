@@ -1,0 +1,38 @@
+# Operational baseline manifest for HRRL2 project.
+# This file tracks the accepted baseline hash that env.py must match.
+# Changes to this file require explicit human review and approval.
+#
+# v0.6.3: This manifest is enforced by the baseline guard before every
+# optimizer run. If env.py hash does not match, the run fails fast.
+
+project: HRRL2
+file: env.py
+accepted_operational_baseline_hash: "e19703467be71e20"
+historical_baseline_hash: "5ffc1e934e1f8908"
+accepted_since: "reward-langgraph-v0.6.2.2"
+classification: "auto_push_baseline_migration_without_review"
+acceptance_reason:
+  - "HRRL2 directory is gitignored"
+  - "old baseline content is unavailable"
+  - "current env.py matches baseline_env.py"
+  - "candidate patch was rolled back"
+  - "full eval retest passed"
+  - "baseline eval metrics were recorded"
+
+# Baseline eval metrics (from v0.6.2.2 acceptance)
+baseline_eval_metrics:
+  reward: 983.26
+  completion_rate: 1.0
+  lateral_error: 0.0041
+
+# Policy
+policy:
+  allow_silent_baseline_migration: false
+  require_explicit_acceptance: true
+
+# Risk notes
+notes: |
+  Historical baseline 5ffc1e934e1f8908 was lost when auto_push silently
+  migrated baseline_env.py in v0.6.1. Current baseline e19703467be71e20
+  has the correct original reward function (not PBRS candidate patch) and
+  min_success_steps=300. v0.6.3 guard prevents future silent migration.

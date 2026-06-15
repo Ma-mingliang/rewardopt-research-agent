@@ -86,6 +86,28 @@ class PatchRollbackError(ResearchAgentError):
         super().__init__(f"Failed to rollback: {git_error}")
 
 
+class BaselineDriftError(ResearchAgentError):
+    """Baseline hash mismatch detected by baseline guard."""
+
+    error_code = "BASELINE_DRIFT"
+    next_action = (
+        "Run with --accept-baseline-migration to override, "
+        "or update the baseline manifest to match current env.py."
+    )
+
+    def __init__(
+        self,
+        message: str,
+        drift_type: str = "",
+        env_hash: str = "",
+        manifest_hash: str = "",
+    ):
+        self.drift_type = drift_type
+        self.env_hash = env_hash
+        self.manifest_hash = manifest_hash
+        super().__init__(message)
+
+
 class StateFileCorruptError(ResearchAgentError):
     """state.json cannot be parsed."""
 
