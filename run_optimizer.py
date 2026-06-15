@@ -31,6 +31,8 @@ from research_agent.core.version_tracker import VersionTracker
 @click.option("--max-static-repair-attempts", default=None, type=int, help="Max static repair attempts (default: 3)")
 @click.option("--max-runtime-repair-attempts", default=None, type=int, help="Max runtime repair attempts (default: 2)")
 @click.option("--short-train/--no-short-train", default=None, help="Enable/disable short train screening")
+@click.option("--max-patch-apply-repair-attempts", default=None, type=int, help="Max patch apply repair attempts (default: 6)")
+@click.option("--max-same-error-repair-attempts", default=None, type=int, help="Max same-error repair attempts before strategy switch (default: 2)")
 @click.option("--baseline-manifest", default=None, type=click.Path(),
               help="Path to baseline manifest YAML (default: docs/baselines/hrrl2_operational_baseline.yaml)")
 @click.option("--accept-baseline-migration", is_flag=True, default=False,
@@ -49,6 +51,8 @@ def main(
     max_static_repair_attempts: int | None,
     max_runtime_repair_attempts: int | None,
     short_train: bool | None,
+    max_patch_apply_repair_attempts: int | None,
+    max_same_error_repair_attempts: int | None,
     baseline_manifest: str | None,
     accept_baseline_migration: bool,
 ):
@@ -85,6 +89,10 @@ def main(
         config.staged_evaluation.max_runtime_repair_attempts = max_runtime_repair_attempts
     if short_train is not None:
         config.staged_evaluation.short_train_enabled = short_train
+    if max_patch_apply_repair_attempts is not None:
+        config.patch_repair.max_patch_apply_repair_attempts = max_patch_apply_repair_attempts
+    if max_same_error_repair_attempts is not None:
+        config.patch_repair.max_same_error_repair_attempts = max_same_error_repair_attempts
 
     # Credential preflight: fail fast if real LLM requested but key is missing
     if not mock_llm:

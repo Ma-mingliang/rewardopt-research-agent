@@ -10,6 +10,19 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from research_agent.core.patch_repair import (
+    PatchRepairError,
+    RepairAttemptTracker,
+    RepairStrategy,
+    build_syntax_repair_prompt,
+    extract_error_line,
+    extract_error_type,
+    extract_local_context,
+    make_error_signature,
+    parse_repair_response,
+    validate_repaired_diff_on_temp_copy,
+)
+
 
 def _auto_fix_compilation(
     file_path: Path,
@@ -218,14 +231,32 @@ def _repair_patch_diff(
     patch_diff: str,
     error_message: str,
     target_file: str = "env.py",
+    project_path: Path | None = None,
+    strategy: RepairStrategy = RepairStrategy.DIRECT_DIFF_REPAIR,
+    reward_idea: str = "",
+    method_pool_context: str = "",
+    allowed_changes: list[str] | None = None,
+    observer=None,
+    candidate_id: str = "",
+    attempt: int = 1,
+    error_sig: str = "",
 ) -> str | None:
-    """Use LLM to repair a failed patch diff.
+    """Use LLM to repair a failed patch diff with syntax-aware context.
 
     Args:
         optimizer: Optimizer instance (provides llm_client access).
         patch_diff: The original unified diff that failed to apply.
         error_message: The error message from the failed patch application.
         target_file: The target file name for the patch.
+        project_path: Path to project root (for extracting local context).
+        strategy: Which repair strategy to use.
+        reward_idea: Description of the reward idea being implemented.
+        method_pool_context: Method pool context for the repair prompt.
+        allowed_changes: List of allowed file changes.
+        observer: RunObserver for event logging.
+        candidate_id: Candidate ID for logging.
+        attempt: Current attempt number.
+        error_sig: Error signature for logging.
 
     Returns:
         Repaired diff string if successful, None if all attempts fail.
@@ -234,44 +265,60 @@ def _repair_patch_diff(
     if llm is None:
         return None
 
-    repair_prompt = f"""A unified diff failed to apply. Analyze the error and generate a corrected diff.
+    # Extract error details
+    error_type = extract_error_type(error_message)
+    error_line = extract_error_line(error_message)
 
-Original diff:
-```
-{patch_diff}
-```
+    # Build context
+    baseline_context = ""
+    patched_context = ""
+    if project_path and error_line:
+        baseline_context = extract_local_context(project_path / target_file, error_line, radius=25)
 
-Error: {error_message}
-
-Common causes of patch application failures:
-1. Line number mismatch (context lines don't match the actual file)
-2. Wrong file path in --- / +++ headers
-3. Incorrect @@ line count headers
-4. Missing or extra context lines
-5. Whitespace/indentation differences
-
-Generate a corrected unified diff that will apply cleanly to {target_file}.
-The diff must:
-- Start with --- a/{target_file} and +++ b/{target_file}
-- Have correct @@ headers with accurate line counts
-- Include enough context lines (3+) for reliable matching
-- Preserve the intended code changes
-
-Return JSON: {{"fixed_diff": "<corrected unified diff>"}}"""
-
-    sys_prompt = (
-        "You are a unified diff repair specialist. Fix the diff so it applies cleanly. "
-        "Return valid JSON only."
+    # Build structured error
+    repair_error = PatchRepairError(
+        error_type=error_type,
+        file_path=target_file,
+        line_number=error_line,
+        message=error_message,
+        failed_diff=patch_diff,
+        baseline_context=baseline_context,
+        patched_context=patched_context,
+        allowed_changes=allowed_changes or [target_file],
     )
+
+    sys_prompt, user_prompt = build_syntax_repair_prompt(
+        repair_error,
+        strategy=strategy,
+        reward_idea=reward_idea,
+        method_pool_context=method_pool_context,
+        attempt=attempt,
+    )
+
+    if observer and observer.is_active:
+        observer.emit("patch_repair_attempt",
+                       candidate_id=candidate_id,
+                       strategy=strategy.value,
+                       attempt=attempt,
+                       error_signature=error_sig,
+                       error_type=error_type,
+                       error_line=error_line)
 
     try:
         response = llm.call(
             system_prompt=sys_prompt,
-            user_prompt=repair_prompt,
+            user_prompt=user_prompt,
             max_tokens=4096,
         )
-        if response.parsed and "fixed_diff" in response.parsed:
-            return response.parsed["fixed_diff"]
+        if response.parsed:
+            repaired = response.parsed.get("fixed_diff") or response.parsed.get("diff")
+            if repaired:
+                return repaired
+        # Try raw text extraction
+        if response.text:
+            repaired = parse_repair_response(response.text)
+            if repaired:
+                return repaired
     except Exception as e:
         print(f"[PATCH-FIX] LLM repair call failed: {e}", flush=True)
 
@@ -1304,44 +1351,141 @@ def _execute_optimizer_phase(
             candidate_results.append(candidate.to_dict())
             continue
 
-        # 3. Apply patch and validate compilation (with LLM repair retry)
+        # 3. Apply patch and validate compilation (with syntax-aware LLM repair)
         patch_applied = False
-        patch_repair_attempts = 30
-        for patch_attempt in range(patch_repair_attempts):
+        repair_cfg = config.patch_repair
+        repair_tracker = RepairAttemptTracker(
+            max_total_attempts=repair_cfg.max_patch_apply_repair_attempts,
+            max_same_error_attempts=repair_cfg.max_same_error_repair_attempts,
+            max_strategy_attempts=repair_cfg.max_strategy_attempts,
+        )
+
+        # Build reward idea context for repair prompts
+        reward_idea_text = candidate.description or ""
+        if candidate_ideas:
+            idea_parts = []
+            for idea in candidate_ideas[:2]:
+                core = idea.get("core_idea", idea.get("description", ""))
+                formula = idea.get("reward_formula", "")
+                if core:
+                    idea_parts.append(core)
+                if formula:
+                    idea_parts.append(f"Formula: {formula}")
+            if idea_parts:
+                reward_idea_text = "\n".join(idea_parts)
+
+        method_pool_ctx = ""
+        if method_pool:
+            from research_agent.optimizers.reward.reward_patch_utils import format_ideas
+            method_pool_ctx = format_ideas(candidate_ideas) if candidate_ideas else ""
+
+        allowed = [f.get("file", "env.py") if isinstance(f, dict) else str(f)
+                   for f in (phase.get("allowed_changes") or ["env.py"])]
+
+        if observer and observer.is_active:
+            observer.emit("patch_repair_start",
+                          candidate_id=candidate.candidate_id,
+                          max_attempts=repair_tracker.max_total_attempts,
+                          max_same_error=repair_tracker.max_same_error_attempts)
+
+        while repair_tracker.should_continue():
+            strategy = repair_tracker.current_strategy
+            attempt_num = repair_tracker.total_attempts + 1
+
             try:
                 apply_result = patch_manager.apply_and_validate(candidate)
                 if apply_result.get("applied"):
                     patch_applied = True
+                    if observer and observer.is_active:
+                        observer.emit("patch_repair_success",
+                                      candidate_id=candidate.candidate_id,
+                                      total_attempts=repair_tracker.total_attempts,
+                                      strategy_history=repair_tracker.strategy_history)
                     break
                 else:
-                    # Not applied but no exception
                     reason_str = apply_result.get("reason", "unknown")
                     errors = apply_result.get("errors", [])
                     error_detail = f"{reason_str}: {'; '.join(errors[:3])}" if errors else reason_str
-                    print(f"[PATCH-FIX] Attempt {patch_attempt+1}: apply failed - {error_detail}", flush=True)
-
-                    # Try LLM repair
-                    if patch_attempt < patch_repair_attempts - 1:
-                        repaired = _repair_patch_diff(optimizer, candidate.patch_diff, error_detail)
-                        if repaired:
-                            candidate.patch_diff = repaired
-                            print(f"[PATCH-FIX] Attempt {patch_attempt+1}: LLM repaired diff, retrying...", flush=True)
-                            continue
+                    print(f"[PATCH-FIX] Attempt {attempt_num} [{strategy.value}]: apply failed - {error_detail}", flush=True)
 
             except PatchApplyError as e:
-                print(f"[PATCH-FIX] Attempt {patch_attempt+1}: PatchApplyError - {e.message[:100]}", flush=True)
+                error_detail = e.message
+                print(f"[PATCH-FIX] Attempt {attempt_num} [{strategy.value}]: PatchApplyError - {e.message[:100]}", flush=True)
 
-                # Try LLM repair
-                if patch_attempt < patch_repair_attempts - 1:
-                    repaired = _repair_patch_diff(optimizer, candidate.patch_diff, e.message)
-                    if repaired:
+            # Build error signature
+            error_type = extract_error_type(error_detail)
+            error_line = extract_error_line(error_detail)
+            error_sig = make_error_signature(error_type, "env.py", error_line, error_detail)
+
+            repair_tracker.record_attempt(error_sig, strategy)
+
+            # Check for repeated error -> switch strategy
+            if repair_cfg.fail_fast_on_repeated_error and repair_tracker.should_switch_strategy(error_sig):
+                old_strategy = strategy
+                new_strategy = repair_tracker.switch_strategy()
+                print(f"[PATCH-FIX] Repeated error '{error_sig}' -> switching strategy: {old_strategy.value} -> {new_strategy.value}", flush=True)
+                if observer and observer.is_active:
+                    observer.emit("patch_repair_strategy_switch",
+                                  candidate_id=candidate.candidate_id,
+                                  old_strategy=old_strategy.value,
+                                  new_strategy=new_strategy.value,
+                                  error_signature=error_sig,
+                                  same_error_count=repair_tracker.error_counts.get(error_sig, 0))
+                # If all strategies exhausted, break
+                if repair_tracker.current_strategy_index >= len(repair_tracker.strategies):
+                    print(f"[PATCH-FIX] All repair strategies exhausted.", flush=True)
+                    break
+                continue
+
+            # Attempt LLM repair with current strategy
+            repaired = _repair_patch_diff(
+                optimizer,
+                candidate.patch_diff,
+                error_detail,
+                target_file="env.py",
+                project_path=project_path,
+                strategy=strategy,
+                reward_idea=reward_idea_text,
+                method_pool_context=method_pool_ctx,
+                allowed_changes=allowed,
+                observer=observer,
+                candidate_id=candidate.candidate_id,
+                attempt=attempt_num,
+                error_sig=error_sig,
+            )
+            if repaired:
+                # Validate repaired diff on temp copy before accepting
+                temp_ok, temp_errors = validate_repaired_diff_on_temp_copy(
+                    project_path, repaired, "env.py",
+                    python_executable=execution_python or "python",
+                )
+                if temp_ok:
+                    candidate.patch_diff = repaired
+                    print(f"[PATCH-FIX] Attempt {attempt_num}: LLM repaired diff (validated), retrying...", flush=True)
+                else:
+                    print(f"[PATCH-FIX] Attempt {attempt_num}: LLM repair produced invalid diff: {temp_errors[:2]}", flush=True)
+                    # Still use it if we're desperate (last attempts)
+                    if attempt_num >= repair_tracker.max_total_attempts - 1:
                         candidate.patch_diff = repaired
-                        print(f"[PATCH-FIX] Attempt {patch_attempt+1}: LLM repaired diff, retrying...", flush=True)
-                        continue
+            else:
+                print(f"[PATCH-FIX] Attempt {attempt_num}: LLM repair returned None", flush=True)
 
         if not patch_applied:
+            diag = repair_tracker.get_diagnostics()
             candidate.status = "rejected"
-            candidate.rejection_reason = f"Patch apply failed after {patch_repair_attempts} repair attempts"
+            candidate.rejection_reason = f"patch_repair_exhausted after {repair_tracker.total_attempts} attempts"
+            candidate.repair_diagnostics = diag
+            if observer and observer.is_active:
+                observer.emit("patch_repair_exhausted",
+                              candidate_id=candidate.candidate_id,
+                              total_attempts=repair_tracker.total_attempts,
+                              diagnostics=diag)
+                observer.emit("repeated_patch_repair_error",
+                              candidate_id=candidate.candidate_id,
+                              last_error_signature=diag.get("last_error_signature"),
+                              error_counts=diag.get("error_counts"))
+            optimizer._log_candidate(candidate)
+            _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
             optimizer._log_candidate(candidate)
             _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
             version_tracker.log_version(

@@ -218,6 +218,20 @@ class StagedEvaluationConfig(BaseModel):
     uncertainty_policy: str = "conservative"
 
 
+class PatchRepairConfig(BaseModel):
+    """Configuration for syntax-aware LLM patch repair."""
+    model_config = ConfigDict(extra="ignore")
+
+    max_patch_apply_repair_attempts: int = 6
+    max_same_error_repair_attempts: int = 2
+    max_strategy_attempts: dict[str, int] = Field(default_factory=lambda: {
+        "direct_diff_repair": 2,
+        "local_hunk_regeneration": 2,
+        "idea_regeneration_from_baseline": 2,
+    })
+    fail_fast_on_repeated_error: bool = True
+
+
 class AutoConfigConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -268,6 +282,7 @@ class AgentConfig(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     staged_evaluation: StagedEvaluationConfig = Field(default_factory=StagedEvaluationConfig)
+    patch_repair: PatchRepairConfig = Field(default_factory=PatchRepairConfig)
     autoconfig: AutoConfigConfig = Field(default_factory=AutoConfigConfig)
 
 

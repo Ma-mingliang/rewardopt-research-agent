@@ -103,6 +103,16 @@ class RunObserver:
         self._baseline_guard_drift_type: str | None = None
         self._baseline_guard_manifest_path: str | None = None
 
+        # Patch repair tracking
+        self._patch_repair_attempts_total: int = 0
+        self._patch_repair_exhausted_count: int = 0
+        self._repeated_patch_repair_error_count: int = 0
+        self._syntax_repair_success_count: int = 0
+        self._max_patch_apply_repair_attempts: int = 6
+        self._max_same_error_repair_attempts: int = 2
+        self._repair_strategy_counts: dict[str, int] = {}
+        self._last_patch_repair_error_signature: str | None = None
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -233,6 +243,32 @@ class RunObserver:
         self._baseline_guard_drift_type = drift_type if not passed else None
         self._baseline_guard_manifest_path = manifest_path or None
 
+    def track_patch_repair(
+        self,
+        attempts: int = 0,
+        exhausted: bool = False,
+        repeated_error: bool = False,
+        success: bool = False,
+        strategy: str = "",
+        error_signature: str = "",
+        max_attempts: int = 6,
+        max_same_error: int = 2,
+    ) -> None:
+        """Track patch repair attempt for summary."""
+        self._patch_repair_attempts_total += attempts
+        if exhausted:
+            self._patch_repair_exhausted_count += 1
+        if repeated_error:
+            self._repeated_patch_repair_error_count += 1
+        if success:
+            self._syntax_repair_success_count += 1
+        if strategy:
+            self._repair_strategy_counts[strategy] = self._repair_strategy_counts.get(strategy, 0) + 1
+        if error_signature:
+            self._last_patch_repair_error_signature = error_signature
+        self._max_patch_apply_repair_attempts = max_attempts
+        self._max_same_error_repair_attempts = max_same_error
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -304,6 +340,14 @@ class RunObserver:
             "baseline_guard_failed": self._baseline_guard_failed,
             "baseline_guard_drift_type": self._baseline_guard_drift_type,
             "baseline_guard_manifest_path": self._baseline_guard_manifest_path,
+            "patch_repair_attempts_total": self._patch_repair_attempts_total,
+            "patch_repair_exhausted_count": self._patch_repair_exhausted_count,
+            "repeated_patch_repair_error_count": self._repeated_patch_repair_error_count,
+            "syntax_repair_success_count": self._syntax_repair_success_count,
+            "max_patch_apply_repair_attempts": self._max_patch_apply_repair_attempts,
+            "max_same_error_repair_attempts": self._max_same_error_repair_attempts,
+            "repair_strategy_counts": dict(self._repair_strategy_counts),
+            "last_patch_repair_error_signature": self._last_patch_repair_error_signature,
             "event_log": "events.jsonl",
         }
         if extra:
