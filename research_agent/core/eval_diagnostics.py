@@ -72,6 +72,10 @@ class EvalDiagnostic:
     patched_env_hash: str = ""
     error_message: str = ""
     diagnostic_summary: str = ""
+    eval_command: str = ""
+    expected_placeholder: str = ""
+    found_placeholder: str = ""
+    fix_hint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -327,7 +331,36 @@ def run_eval_preflight(
                 diag.diagnostic_summary = f"Cannot write to output directory: {output_dir}"
                 return False, diag
 
-    # 6. Check execution_python is used in eval_command
+    # 6. Check eval_command placeholder validity
+    if eval_command:
+        cmd_lower = eval_command.lower()
+        has_evaluate_script = "evaluate.py" in cmd_lower or "evaluate" in cmd_lower
+        has_seed_placeholder = "{seed}" in eval_command
+        has_checkpoint_placeholder = "{checkpoint_path}" in eval_command
+
+        if has_evaluate_script and has_seed_placeholder and not has_checkpoint_placeholder:
+            diag.failed = True
+            diag.failure_type = EvalFailureType.MODEL_LOAD_FAILED
+            diag.error_message = (
+                "eval_command uses {seed} but evaluate.py expects a model checkpoint path. "
+                "Replace {seed} with {checkpoint_path} in your config.yaml eval_command."
+            )
+            diag.diagnostic_summary = (
+                "Invalid eval_command placeholder: evaluate.py needs {checkpoint_path}, "
+                "not {seed}. Update eval_command in config.yaml."
+            )
+            diag.eval_command = eval_command
+            diag.expected_placeholder = "{checkpoint_path}"
+            diag.found_placeholder = "{seed}"
+            diag.fix_hint = (
+                "In your project's .research-agent/config.yaml, change:\n"
+                "  eval_command: ... evaluate.py {seed}\n"
+                "to:\n"
+                "  eval_command: ... evaluate.py {checkpoint_path}"
+            )
+            return False, diag
+
+    # 7. Check execution_python is used in eval_command
     if execution_python and eval_command:
         resolved = eval_command
         if "{python}" in resolved:

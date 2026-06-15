@@ -1,0 +1,67 @@
+# Example: HRRL2 research-agent config with correct eval_command placeholder
+#
+# IMPORTANT: eval_command must use {checkpoint_path} (not {seed}) to pass
+# the trained model path to evaluate.py. Using {seed} causes FileNotFoundError
+# because evaluate.py expects a .zip model path, not a seed number.
+#
+# Correct:
+#   eval_command: ... evaluate.py {checkpoint_path}
+#
+# Wrong (causes model_load_failed):
+#   eval_command: ... evaluate.py {seed}
+
+execution:
+  max_steps: 50000
+  train_command: E:/Anaconda/envs/RL2/python.exe .research-agent/train.py {seed}
+  eval_command: E:/Anaconda/envs/RL2/python.exe .research-agent/evaluate.py {checkpoint_path}
+  full_eval_seeds:
+    - 42
+  confirmation_seeds:
+    - 42
+  timeout_seconds_per_seed: 600
+
+evaluation:
+  test_episodes: 30
+  checkpoint_dir: model/checkpoints
+  modifiable_files:
+    - env.py
+  metrics:
+    - name: completion_rate
+      direction: maximize
+      weight: 0.4
+      hard_min: 0.3
+    - name: reward
+      direction: maximize
+      weight: 0.4
+    - name: lateral_error
+      direction: minimize
+      weight: 0.2
+      hard_max: 50.0
+  composite_threshold: 0.0
+  llm_weight: 0.2
+
+budget:
+  wall_clock_hours: 12
+
+llm:
+  provider: openai_compatible
+  model: mimo-v2.5-pro
+  base_url: "https://token-plan-sgp.xiaomimimo.com/v1"
+  api_key_env: "MIMO_API_KEY"
+  timeout_seconds: 120
+  max_retries: 3
+  max_tokens: 8192
+  qps: 2.0
+
+git:
+  auto_push: true
+  push_remote: origin
+  push_branch: main
+
+optimizer:
+  active_categories:
+    - A_potential_based_reward
+    - B_safety_constraint_reward
+    - C_curriculum_subgoal_reward
+    - D_adaptive_dynamic_reward
+  methods_per_category: 2
