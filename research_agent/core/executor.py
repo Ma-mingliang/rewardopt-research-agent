@@ -1401,6 +1401,10 @@ def _execute_optimizer_phase(
                                       candidate_id=candidate.candidate_id,
                                       total_attempts=repair_tracker.total_attempts,
                                       strategy_history=repair_tracker.strategy_history)
+                        observer.track_patch_repair(
+                            attempts=repair_tracker.total_attempts,
+                            success=True,
+                            strategy=strategy.value)
                     break
                 else:
                     reason_str = apply_result.get("reason", "unknown")
@@ -1480,10 +1484,15 @@ def _execute_optimizer_phase(
                               candidate_id=candidate.candidate_id,
                               total_attempts=repair_tracker.total_attempts,
                               diagnostics=diag)
+                observer.track_patch_repair(
+                    attempts=repair_tracker.total_attempts,
+                    exhausted=True,
+                    error_signature=diag.get("last_error_signature"))
                 observer.emit("repeated_patch_repair_error",
                               candidate_id=candidate.candidate_id,
                               last_error_signature=diag.get("last_error_signature"),
                               error_counts=diag.get("error_counts"))
+                observer.track_patch_repair(repeated_error=True)
             optimizer._log_candidate(candidate)
             _mark_batch("error", accepted=False, reason=candidate.rejection_reason)
             optimizer._log_candidate(candidate)
