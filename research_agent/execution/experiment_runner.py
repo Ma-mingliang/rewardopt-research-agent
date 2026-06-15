@@ -33,6 +33,7 @@ def run_train(
     timeout_override: int | None = None,
     checkpoint_dir: Path | None = None,
     python_executable: str | None = None,
+    max_steps_override: int | None = None,
 ) -> RunResult:
     """Run training command for a single seed.
 
@@ -43,6 +44,7 @@ def run_train(
         extra_env: Additional environment variables.
         timeout_override: Override timeout from config.
         checkpoint_dir: Directory to save best model checkpoint.
+        max_steps_override: If set, passed as RA_MAX_STEPS env var.
 
     Returns:
         RunResult with stdout, stderr, metrics, and timing.
@@ -64,6 +66,8 @@ def run_train(
     env = dict(extra_env) if extra_env else {}
     if checkpoint_dir:
         env["RA_CHECKPOINT_DIR"] = str(checkpoint_dir)
+    if max_steps_override is not None:
+        env["RA_MAX_STEPS"] = str(max_steps_override)
 
     timeout = timeout_override or config.execution.timeout_seconds_per_seed
     return _run_subprocess(project_path, formatted_command, timeout, env or None,

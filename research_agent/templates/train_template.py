@@ -146,6 +146,14 @@ def main():
                         help="Total training timesteps")
     args = parser.parse_args()
 
+    # RA_MAX_STEPS env var overrides --timesteps (used by smoke train)
+    ra_max_steps = os.environ.get("RA_MAX_STEPS")
+    if ra_max_steps:
+        try:
+            args.timesteps = int(ra_max_steps)
+        except ValueError:
+            pass
+
     # Determine checkpoint directory
     checkpoint_dir = None
     if args.checkpoint_dir:
