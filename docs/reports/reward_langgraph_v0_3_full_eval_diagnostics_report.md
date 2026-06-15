@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-15
 **Branch:** `reward-langgraph-v0.3-full-eval-diagnostics`
-**Commit:** (pending)
+**Commit:** `57a4a8e`
 
 ---
 
@@ -177,6 +177,20 @@ Backward compatible: `metrics` and `failed` fields always present. New fields ar
 | test_langgraph_reward_agent.py | 46 | All pass |
 | Other tests | 57 | All pass |
 | test_smoke.py::test_initial_state | 1 | Pre-existing Windows path failure |
+
+### Pre-existing Failure Verification
+
+**Test:** `tests/test_smoke.py::test_initial_state`
+**Line:** 62
+**Error:** `assert state["project_path"] == "/project"` — expects Unix path `/project`, gets Windows path `D:\project`
+
+**Verification:** Ran the same test on `reward-langgraph-v0.2` tag (commit `7567b7a`) via `git worktree`:
+```
+tests\test_smoke.py F
+FAILED tests/test_smoke.py::test_initial_state - AssertionError: assert 'D:\\project' == '/project'
+```
+
+**Conclusion:** Same failure on v0.2 tag. This is a pre-existing Windows path issue in `test_smoke.py` — the test hardcodes a Unix path expectation. Not introduced by v0.3 changes. Non-blocking.
 
 ---
 
