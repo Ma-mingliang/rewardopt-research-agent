@@ -84,6 +84,7 @@ def run_eval(
     python_executable: str | None = None,
     observer: Any | None = None,
     candidate_id: str = "",
+    checkpoint_dir: Path | None = None,
 ) -> RunResult:
     """Run evaluation command for a single seed and parse metrics.
 
@@ -97,6 +98,7 @@ def run_eval(
         python_executable: Python executable for subprocess.
         observer: Optional RunObserver for diagnostics.
         candidate_id: Candidate ID for diagnostic file naming.
+        checkpoint_dir: Directory containing best_model.zip for {checkpoint_path}.
 
     Returns:
         RunResult with parsed metrics and diagnostics.
@@ -121,6 +123,20 @@ def run_eval(
         )
 
     formatted_command = command.replace("{seed}", str(seed))
+
+    # Resolve checkpoint_dir from parameter or env
+    ckpt_dir = checkpoint_dir
+    if ckpt_dir is None and extra_env:
+        ra_ckpt = extra_env.get("RA_CHECKPOINT_DIR")
+        if ra_ckpt:
+            ckpt_dir = Path(ra_ckpt)
+    resolved_model_path = str(ckpt_dir / "best_model.zip") if ckpt_dir else ""
+
+    # Resolve {checkpoint_path} placeholder in eval command
+    if "{checkpoint_path}" in formatted_command:
+        formatted_command = formatted_command.replace(
+            "{checkpoint_path}", resolved_model_path)
+
     timeout = timeout_override or config.execution.timeout_seconds_per_seed
 
     result = _run_subprocess(project_path, formatted_command, timeout, extra_env,
@@ -185,6 +201,7 @@ def run_eval(
         env_path=str(project_path / "env.py"),
         env_eval_hash="",  # computed by caller if needed
         error_message=result.stderr[:500] if result.return_code != 0 else "",
+        model_path=resolved_model_path,
         diagnostic_summary=_summarize_failure(failure_type, result.return_code, metrics),
     )
 
@@ -250,7 +267,8 @@ def run_full_eval(
     for seed in seeds:
         result = run_eval(project_path, config, seed, work_dir, env or None,
                           python_executable=python_executable,
-                          observer=observer, candidate_id=candidate_id)
+                          observer=observer, candidate_id=candidate_id,
+                          checkpoint_dir=checkpoint_dir)
         results.append(result)
 
     return results
@@ -385,6 +403,7 @@ def _build_diagnostic(
     env_eval_hash: str = "",
     error_message: str = "",
     diagnostic_summary: str = "",
+    model_path: str = "",
 ) -> dict[str, Any]:
     """Build a diagnostic dict for a single eval run."""
     from research_agent.core.eval_diagnostics import build_repro_command, hash_file
@@ -394,6 +413,7 @@ def _build_diagnostic(
         eval_command=command,
         cwd=cwd,
         candidate_id=candidate_id,
+        model_path=model_path,
     )
 
     env_hash = env_eval_hash or hash_file(env_path) if env_path else ""
@@ -422,6 +442,7 @@ def _build_diagnostic(
         "env_hash": env_hash,
         "error_message": error_message,
         "diagnostic_summary": diagnostic_summary,
+        "model_path": model_path,
     }
 
 

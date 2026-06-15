@@ -153,6 +153,10 @@ def build_repro_command(
     if seed is not None and "{seed}" in cmd:
         cmd = cmd.replace("{seed}", str(seed))
 
+    # Inject checkpoint_path if available
+    if model_path and "{checkpoint_path}" in cmd:
+        cmd = cmd.replace("{checkpoint_path}", model_path)
+
     parts.append(cmd)
 
     return " && ".join(parts) if parts else cmd
