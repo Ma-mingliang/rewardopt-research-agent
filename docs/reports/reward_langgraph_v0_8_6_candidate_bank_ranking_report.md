@@ -109,28 +109,51 @@ semantic_rank_score = 0.5                           # base (validation passed)
 
 ## Extension Campaign Results
 
-### Run Configuration
+### Initial Failure
+
+The first extension campaign failed: `RewardOptimizer.propose_candidate() got an unexpected keyword argument 'method_pool'`.
+
+**Root cause**: The executor builds `propose_kwargs` with `method_pool`, `previous_candidate_diffs`, `previous_method_ids` and passes them via `**propose_kwargs` to `optimizer.propose_candidate()`. The `LangGraphRewardOptimizer` accepts all three, but the base `RewardOptimizer` only accepts `(self, phase, baseline_metrics, ideas=None)`. When `--optimizer reward_langgraph` was omitted, the default `RewardOptimizer` was used and rejected the extra kwargs.
+
+### Release-Fix
+
+Added signature filtering in `executor.py` before the `propose_candidate` call:
+
+```python
+import inspect as _inspect
+_sig = _inspect.signature(optimizer.propose_candidate)
+_accepted = set(_sig.parameters.keys()) - {"self"}
+filtered_kwargs = {k: v for k, v in propose_kwargs.items() if k in _accepted}
+```
+
+This filters `propose_kwargs` to only include parameters the actual optimizer accepts, making the call compatible with both `RewardOptimizer` and `LangGraphRewardOptimizer`.
+
+### Smoke Test Result
 
 ```
 --project D:/research-agent/HRRL2
---max-iterations 3 --batch-size 1 --proposal-only
+--optimizer reward_langgraph
+--max-iterations 1 --batch-size 1 --proposal-only
 --max-semantic-regeneration-attempts 2
 --staged-eval
 --baseline-manifest docs/baselines/hrrl2_operational_baseline.yaml
 ```
 
-### Result
+| Metric | Value |
+|--------|-------|
+| run_id | 20260616_181528_reward_langgraph_395b46 |
+| candidates_proposal_only_validated | 1 |
+| semantic_gate_passed_count | 1 |
+| semantic_gate_rejected_count | 0 |
+| template_usage_counts | {a_potential_based_reward_openreview_ubnujziy2o: 1} |
+| template_diversity_score | 1.0 |
+| template_low_diversity | true |
+| baseline_guard_passed | true |
+| train_called | false |
+| full_eval_called | false |
+| env.py hash | e19703467be71e20 (unchanged) |
 
-**Campaign failed** due to pre-existing API mismatch: `RewardOptimizer.propose_candidate() got an unexpected keyword argument 'method_pool'`. This is unrelated to v0.8.6 changes.
-
-### Observability Verification
-
-Template diversity tracking fields confirmed present in summary.json:
-- `template_usage_counts: {}` (no candidates produced)
-- `template_diversity_score: 0.0`
-- `template_low_diversity: true`
-- `semantic_gate_passed_count: 0`
-- `semantic_gate_rejected_count: 0`
+**Method pool mismatch resolved**: Yes. No TypeError during the smoke run.
 
 ## Test Results
 
@@ -148,7 +171,7 @@ Template diversity tracking fields confirmed present in summary.json:
 
 | File | Changes |
 |------|---------|
-| `research_agent/core/executor.py` | Added `track_semantic_gate(passed=True)` to 3 regeneration success paths; added template tracking before candidate bank write |
+| `research_agent/core/executor.py` | Added `track_semantic_gate(passed=True)` to 3 regeneration success paths; added template tracking before candidate bank write; added propose_kwargs signature filtering for API compat |
 | `research_agent/core/observability.py` | Added template diversity tracking: `_template_usage_counts`, `_template_diversity_score`, `_template_low_diversity`, `track_template_selection()`, `compute_template_diversity()`, summary fields |
 | `run_optimizer.py` | Added `observer.compute_template_diversity()` before close |
 
@@ -159,6 +182,7 @@ Template diversity tracking fields confirmed present in summary.json:
 | `research_agent/core/candidate_bank.py` | Candidate bank loading, ranking, diversity analysis |
 | `tests/test_candidate_bank.py` | 27 tests for candidate bank module |
 | `tests/test_candidate_bank_ranking.py` | 9 tests for template diversity and counter consistency |
+| `tests/test_method_pool_api_compat.py` | 7 tests for method_pool kwarg API compatibility |
 | `docs/reports/reward_langgraph_v0_8_6_candidate_bank_ranking_report.md` | This report |
 
 ## Key Findings

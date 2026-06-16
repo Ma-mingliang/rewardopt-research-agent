@@ -2011,7 +2011,12 @@ def _execute_optimizer_phase(
                 pass
         propose_kwargs["previous_candidate_diffs"] = prev_diffs
         propose_kwargs["previous_method_ids"] = prev_method_ids
-        candidate = optimizer.propose_candidate(phase, baseline_metrics, candidate_ideas, **propose_kwargs)
+        # Filter kwargs to only include parameters the optimizer accepts
+        import inspect as _inspect
+        _sig = _inspect.signature(optimizer.propose_candidate)
+        _accepted = set(_sig.parameters.keys()) - {"self"}
+        filtered_kwargs = {k: v for k, v in propose_kwargs.items() if k in _accepted}
+        candidate = optimizer.propose_candidate(phase, baseline_metrics, candidate_ideas, **filtered_kwargs)
         resource_usage["candidates_proposed"] = resource_usage.get("candidates_proposed", 0) + 1
 
         if observer and observer.is_active:
