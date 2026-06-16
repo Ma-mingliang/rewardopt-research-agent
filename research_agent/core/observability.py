@@ -35,6 +35,7 @@ class RunObserver:
         mock_llm: bool = False,
         max_iterations: int | None = None,
         batch_size: int = 1,
+        proposal_only: bool = False,
         extra: dict[str, Any] | None = None,
     ):
         self.run_id = _generate_run_id(optimizer)
@@ -52,6 +53,7 @@ class RunObserver:
         self._mock_llm = mock_llm
         self._max_iterations = max_iterations
         self._batch_size = batch_size
+        self._proposal_only = proposal_only
         self._extra = extra or {}
 
         self._started_at = datetime.now(timezone.utc).isoformat()
@@ -64,6 +66,7 @@ class RunObserver:
         self._candidates_ready = 0
         self._candidates_rejected = 0
         self._candidates_trained = 0
+        self._candidates_proposal_only_validated = 0
         self._candidates_eval_failed = 0
         self._metrics_empty_count = 0
         self._llm_calls_total = 0
@@ -198,6 +201,8 @@ class RunObserver:
             self._candidates_rejected += 1
             if rejection_reason:
                 self._rejection_reasons[rejection_reason] = self._rejection_reasons.get(rejection_reason, 0) + 1
+        elif status == "proposal_only_validated":
+            self._candidates_proposal_only_validated += 1
         self._llm_calls_total += llm_calls
 
     def track_train(self, success: bool) -> None:
@@ -447,12 +452,14 @@ class RunObserver:
             "commit": commit,
             "tag": tag,
             "mock_llm": self._mock_llm,
+            "proposal_only": self._proposal_only,
             "max_iterations": self._max_iterations,
             "batch_size": self._batch_size,
             "candidates_total": self._candidates_total,
             "candidates_ready": self._candidates_ready,
             "candidates_rejected": self._candidates_rejected,
             "candidates_trained": self._candidates_trained,
+            "candidates_proposal_only_validated": self._candidates_proposal_only_validated,
             "candidates_eval_failed": self._candidates_eval_failed,
             "metrics_empty_count": self._metrics_empty_count,
             "llm_calls_total": self._llm_calls_total,

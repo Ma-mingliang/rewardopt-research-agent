@@ -37,6 +37,8 @@ from research_agent.core.version_tracker import VersionTracker
               help="Path to baseline manifest YAML (default: docs/baselines/hrrl2_operational_baseline.yaml)")
 @click.option("--accept-baseline-migration", is_flag=True, default=False,
               help="Allow proceeding when env.py differs from manifest hash")
+@click.option("--proposal-only", is_flag=True, default=False,
+              help="Run propose+validate only, skip training and eval")
 def main(
     project: str,
     max_iterations: int | None,
@@ -55,6 +57,7 @@ def main(
     max_same_error_repair_attempts: int | None,
     baseline_manifest: str | None,
     accept_baseline_migration: bool,
+    proposal_only: bool,
 ):
     """Run optimizer with version tracking.
 
@@ -138,6 +141,7 @@ def main(
         mock_llm=mock_llm,
         max_iterations=max_iterations,
         batch_size=batch_size,
+        proposal_only=proposal_only,
     )
 
     print("=" * 80, flush=True)
@@ -151,6 +155,7 @@ def main(
     print(f"Optimizer override: {optimizer or '(from experiment_plan.json)'}", flush=True)
     print(f"Run ID: {observer.run_id}", flush=True)
     print(f"Run log dir: {observer.run_dir}", flush=True)
+    print(f"Proposal only: {proposal_only}", flush=True)
     print("=" * 80 + "\n", flush=True)
     print("Note: configuration confirmation will happen inside optimizer phase.", flush=True)
 
@@ -325,6 +330,7 @@ def main(
                 sampler=sampler, mock_llm=mock_llm,
                 execution_python=execution_python,
                 observer=observer,
+                proposal_only=proposal_only,
             )
         except Exception as e:
             print(f"[ERROR] Iteration failed: {e}", flush=True)

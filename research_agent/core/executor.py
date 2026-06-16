@@ -1215,6 +1215,7 @@ def _execute_optimizer_phase(
     mock_llm: bool = False,
     execution_python: str | None = None,
     observer=None,
+    proposal_only: bool = False,
 ) -> dict:
     """Execute an optimizer phase with full propose→apply→eval→accept→rollback cycle.
 
@@ -1230,6 +1231,12 @@ def _execute_optimizer_phase(
     6. Accept/reject decision (composite scoring)
     7. If accepted: git snapshot, update state
     8. If rejected: rollback patch
+
+    When proposal_only=True:
+    - Steps 1-3 run normally (propose + apply + compilation check)
+    - Semantic gate and validation run normally
+    - Training and eval are skipped (steps 4-8)
+    - Candidates are logged as proposal_only_validated
 
     Note: Screening eval removed — RL early episodes often fail,
     so single-seed screening unfairly rejects good candidates.
@@ -1410,16 +1417,23 @@ def _execute_optimizer_phase(
             torch_importable=preflight.torch_importable,
         )
     if not preflight.passed and preflight.failure_type == "infra_windows_pagefile_too_small":
-        print(f"\n[STOP] System preflight failed: {preflight.failure_type}", flush=True)
-        print(f"  {preflight.fix_hint}", flush=True)
-        if observer and observer.is_active:
-            observer.write_summary()
-        return {
-            "status": "failed",
-            "failure_type": preflight.failure_type,
-            "error_message": preflight.error_message,
-            "fix_hint": preflight.fix_hint,
-        }
+        if proposal_only:
+            print(f"\n[WARNING] System preflight detected: {preflight.failure_type}", flush=True)
+            print(f"  Proposal-only mode: continuing without training.", flush=True)
+            if observer and observer.is_active:
+                observer.emit("system_preflight_warning_proposal_only",
+                              failure_type=preflight.failure_type)
+        else:
+            print(f"\n[STOP] System preflight failed: {preflight.failure_type}", flush=True)
+            print(f"  {preflight.fix_hint}", flush=True)
+            if observer and observer.is_active:
+                observer.write_summary()
+            return {
+                "status": "failed",
+                "failure_type": preflight.failure_type,
+                "error_message": preflight.error_message,
+                "fix_hint": preflight.fix_hint,
+            }
 
     while True:
         iteration_count += 1
@@ -1885,6 +1899,22 @@ def _execute_optimizer_phase(
                         pass
                     continue
                 print(f"[AUTO-FIX] {version_id}: compilation fixed successfully", flush=True)
+
+        # v0.8.3: Proposal-only mode — skip training and eval
+        if proposal_only:
+            candidate.status = "proposal_only_validated"
+            optimizer._log_candidate(candidate)
+            if observer and observer.is_active:
+                observer.track_candidate("proposal_only_validated")
+                observer.emit("candidate_proposal_only_validated",
+                              candidate_id=candidate.candidate_id)
+            print(f"[PROPOSAL-ONLY] {version_id}: validated, skipping train/eval", flush=True)
+            candidate_results.append(candidate.to_dict())
+            try:
+                patch_manager.rollback_patch(candidate)
+            except Exception:
+                pass
+            continue
 
         # Staged eval: smoke train (crash-only screening before full training)
         if use_staged and staged_cfg.get("smoke_train_enabled", True):
