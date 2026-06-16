@@ -164,6 +164,11 @@ class RunObserver:
         self._system_preflight_failure_type: str = ""
         self._torch_import_preflight_passed: bool = True
 
+        # Template diversity tracking (v0.8.6)
+        self._template_usage_counts: dict[str, int] = {}
+        self._template_diversity_score: float = 0.0
+        self._template_low_diversity: bool = False
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -441,6 +446,20 @@ class RunObserver:
         if syntax_repaired:
             self._semantic_regeneration_syntax_repair_count += 1
 
+    def track_template_selection(self, template_id: str) -> None:
+        """Track template usage for diversity analysis."""
+        self._template_usage_counts[template_id] = (
+            self._template_usage_counts.get(template_id, 0) + 1
+        )
+
+    def compute_template_diversity(self) -> None:
+        """Compute template diversity metrics from accumulated usage counts."""
+        total = sum(self._template_usage_counts.values())
+        unique = len(self._template_usage_counts)
+        if total > 0:
+            self._template_diversity_score = round(unique / total, 4)
+        self._template_low_diversity = unique < max(2, total // 2)
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -555,6 +574,9 @@ class RunObserver:
             "semantic_regeneration_failures": self._semantic_regeneration_failures,
             "semantic_regeneration_syntax_valid_count": self._semantic_regeneration_syntax_valid_count,
             "semantic_regeneration_syntax_repair_count": self._semantic_regeneration_syntax_repair_count,
+            "template_usage_counts": dict(self._template_usage_counts),
+            "template_diversity_score": self._template_diversity_score,
+            "template_low_diversity": self._template_low_diversity,
             "event_log": "events.jsonl",
         }
         if extra:

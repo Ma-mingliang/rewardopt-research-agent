@@ -409,6 +409,7 @@ def main(
 
     observer.emit("run_end", phase="main", total_iterations=iteration,
                    total_candidates=resource_usage.get("candidates_proposed", 0))
+    observer.compute_template_diversity()
     observer.close()
     print(f"[OBSERVER] Summary written to: {observer.summary_path}", flush=True)
 

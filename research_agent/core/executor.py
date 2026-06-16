@@ -2173,6 +2173,12 @@ def _execute_optimizer_phase(
                                                   attempt=regen_attempt + 1,
                                                   syntax_valid=True)
                                     observer.track_semantic_regeneration(success=True, syntax_valid=True)
+                                    observer.track_semantic_gate(
+                                        passed=True,
+                                        reason="passed_after_regeneration",
+                                        cosmetic_only=False,
+                                        reward_terms_changed=True,
+                                    )
                                 print(f"[REGENERATION] {version_id}: syntax-valid semantic patch on attempt {regen_attempt + 1}", flush=True)
                                 break
                             else:
@@ -2218,6 +2224,12 @@ def _execute_optimizer_phase(
                                                                   attempt=regen_attempt + 1,
                                                                   syntax_repaired=True)
                                                     observer.track_semantic_regeneration(success=True, syntax_repaired=True)
+                                                    observer.track_semantic_gate(
+                                                        passed=True,
+                                                        reason="passed_after_syntax_repair",
+                                                        cosmetic_only=False,
+                                                        reward_terms_changed=True,
+                                                    )
                                                 print(f"[REGENERATION] {version_id}: syntax-repaired patch accepted on attempt {regen_attempt + 1}", flush=True)
                                                 break
                                             else:
@@ -2278,6 +2290,12 @@ def _execute_optimizer_phase(
                                     observer.emit("semantic_regeneration_template_success",
                                                   candidate_id=candidate.candidate_id)
                                     observer.track_semantic_regeneration(success=True, syntax_valid=True)
+                                    observer.track_semantic_gate(
+                                        passed=True,
+                                        reason="passed_after_template_fallback",
+                                        cosmetic_only=False,
+                                        reward_terms_changed=True,
+                                    )
                                 print(f"[REGENERATION] {version_id}: template fallback patch accepted", flush=True)
                             else:
                                 print(f"[REGENERATION] {version_id}: template fallback rejected: {template_decision.reason}", flush=True)
@@ -2657,6 +2675,14 @@ def _execute_optimizer_phase(
                 proposal_source = "semantic_regeneration"
             else:
                 proposal_source = "primary"
+            # Track template diversity
+            if observer and observer.is_active:
+                selected_tpl = ""
+                if candidate_ideas:
+                    first_idea = candidate_ideas[0] if isinstance(candidate_ideas[0], dict) else {}
+                    selected_tpl = first_idea.get("template_id", first_idea.get("method_id", ""))
+                if selected_tpl:
+                    observer.track_template_selection(selected_tpl)
             _write_candidate_bank_record(
                 bank_path=candidate_bank_path,
                 candidate=candidate,
