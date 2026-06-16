@@ -126,6 +126,16 @@ class RunObserver:
         self._initial_patch_too_large_count: int = 0
         self._initial_patch_outside_allowed_context_count: int = 0
 
+        # Candidate diversity tracking (v0.8)
+        self._candidate_diversity_enabled: bool = True
+        self._candidate_pair_similarity_max: float = 0.0
+        self._duplicate_patch_count: int = 0
+        self._duplicate_method_count: int = 0
+        self._low_diversity_candidate_count: int = 0
+        self._method_selection_fallback_count: int = 0
+        self._previous_candidate_diffs: list[str] = []
+        self._previous_method_ids: list[str] = []
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -317,6 +327,33 @@ class RunObserver:
         if outside_context:
             self._initial_patch_outside_allowed_context_count += 1
 
+    def track_candidate_diversity(
+        self,
+        current_diff: str = "",
+        current_method_ids: list[str] | None = None,
+        similarity_score: float = 0.0,
+        is_duplicate_patch: bool = False,
+        is_duplicate_method: bool = False,
+        is_low_diversity: bool = False,
+        method_selection_fallback: bool = False,
+    ) -> None:
+        """Track candidate diversity for summary."""
+        self._candidate_diversity_enabled = True
+        if similarity_score > self._candidate_pair_similarity_max:
+            self._candidate_pair_similarity_max = similarity_score
+        if is_duplicate_patch:
+            self._duplicate_patch_count += 1
+        if is_duplicate_method:
+            self._duplicate_method_count += 1
+        if is_low_diversity:
+            self._low_diversity_candidate_count += 1
+        if method_selection_fallback:
+            self._method_selection_fallback_count += 1
+        if current_diff:
+            self._previous_candidate_diffs.append(current_diff)
+        if current_method_ids:
+            self._previous_method_ids.extend(current_method_ids)
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -406,6 +443,12 @@ class RunObserver:
             "initial_patch_line_count": self._initial_patch_line_count,
             "initial_patch_too_large_count": self._initial_patch_too_large_count,
             "initial_patch_outside_allowed_context_count": self._initial_patch_outside_allowed_context_count,
+            "candidate_diversity_enabled": self._candidate_diversity_enabled,
+            "candidate_pair_similarity_max": round(self._candidate_pair_similarity_max, 4),
+            "duplicate_patch_count": self._duplicate_patch_count,
+            "duplicate_method_count": self._duplicate_method_count,
+            "low_diversity_candidate_count": self._low_diversity_candidate_count,
+            "method_selection_fallback_count": self._method_selection_fallback_count,
             "event_log": "events.jsonl",
         }
         if extra:

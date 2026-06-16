@@ -282,7 +282,7 @@ def main(
             break
 
         # Get next batch
-        batch = sampler.get_next_batch(batch_size=batch_size)
+        batch, _method_fallback = sampler.get_next_batch(batch_size=batch_size)
         if not batch:
             print("\n[STOP] All methods have been tried.", flush=True)
             break

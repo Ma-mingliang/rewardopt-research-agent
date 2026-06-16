@@ -102,10 +102,20 @@ CONTEXT_PROPOSE_USER_PROMPT = """## Reward Function: {function_name}
 ## Forbidden Changes
 {forbidden}
 
+## Diversity Context
+{diversity_context}
+
 ## Instructions
 Propose ONE SMALL modification (5-30 lines) to the reward function above.
 Focus on the research idea. Use the exact line numbers from the source.
 Ensure every added line matches the base indentation ({base_indent} spaces for method body).
+
+CRITICAL DIVERSITY RULES:
+- Do NOT propose cosmetic changes (blank lines, whitespace, comments).
+- Your change MUST add, modify, or remove a REWARD TERM or REWARD COMPUTATION.
+- If previous candidates used the same method, you MUST change the reward term STRUCTURE, not just coefficients.
+- Prefer adding new reward terms over modifying existing ones.
+- The change must be substantively different from any previous candidate listed above.
 
 Output ONLY a unified diff. No markdown fences, no explanation."""
 

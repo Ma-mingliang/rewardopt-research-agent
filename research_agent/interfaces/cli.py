@@ -566,7 +566,7 @@ def run_iteration_cmd(mock_llm: bool, json_output: bool):
         sys.exit(1)
 
     # Get next batch
-    batch = sampler.get_next_batch(batch_size=2)
+    batch, _method_fallback = sampler.get_next_batch(batch_size=2)
     if not batch:
         print_json(ok_response({
             "iteration_complete": True,

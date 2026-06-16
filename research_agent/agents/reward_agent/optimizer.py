@@ -60,6 +60,8 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         baseline_metrics: dict[str, dict[str, float]],
         ideas: list[dict] | None = None,
         method_pool: list[RewardMethodRecord] | None = None,
+        previous_candidate_diffs: list[str] | None = None,
+        previous_method_ids: list[str] | None = None,
     ) -> Candidate:
         """Propose a reward function modification via LangGraph agent.
 
@@ -128,6 +130,8 @@ class LangGraphRewardOptimizer(BaseOptimizer):
             "execution_python": self._execution_env.python_executable,
             "method_pool_context": method_pool_context,
             "method_pool_ids": method_pool_ids,
+            "previous_candidate_diffs": previous_candidate_diffs or [],
+            "previous_method_ids": previous_method_ids or [],
         }
 
         # Invoke the graph

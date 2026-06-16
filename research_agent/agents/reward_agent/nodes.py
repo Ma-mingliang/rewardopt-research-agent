@@ -241,6 +241,21 @@ def _build_context_proposal_prompt(state: RewardAgentState) -> tuple[str, str] |
 
     existing_terms = ", ".join(proposal_ctx.existing_reward_terms) if proposal_ctx.existing_reward_terms else "(none detected)"
 
+    # Build diversity context (v0.8)
+    prev_diffs = state.get("previous_candidate_diffs", [])
+    prev_methods = state.get("previous_method_ids", [])
+    diversity_parts = []
+    if prev_methods:
+        diversity_parts.append(f"Previously tried method IDs: {', '.join(set(prev_methods))}")
+    if prev_diffs:
+        diversity_parts.append(f"Previous candidates produced {len(prev_diffs)} patch(es). Your patch MUST be substantively different.")
+        for i, d in enumerate(prev_diffs[-2:], 1):  # Show last 2
+            diff_preview = d.strip()[:200]
+            diversity_parts.append(f"  Previous patch {i}: {diff_preview}...")
+    if not diversity_parts:
+        diversity_parts.append("(No previous candidates in this batch)")
+    diversity_context = "\n".join(diversity_parts)
+
     sys_prompt = CONTEXT_PROPOSE_SYSTEM_PROMPT.format(
         target_file=proposal_ctx.target_file,
     )
@@ -261,6 +276,7 @@ def _build_context_proposal_prompt(state: RewardAgentState) -> tuple[str, str] |
         method_context=method_context,
         allowed=allowed,
         forbidden=proposal_ctx.forbidden_summary,
+        diversity_context=diversity_context,
     )
 
     return sys_prompt, user_prompt

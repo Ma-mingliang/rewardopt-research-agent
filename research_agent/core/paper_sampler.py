@@ -80,23 +80,25 @@ class PaperSampler:
             self._category_improvements[category] = []
         self._category_improvements[category].append(score)
 
-    def get_next_batch(self, batch_size: int = 2) -> list[dict]:
+    def get_next_batch(self, batch_size: int = 2) -> tuple[list[dict], bool]:
         """Pick next batch from current active category.
 
         Selection logic:
         1. Pick from _active_categories[_current_cat_index]
-        2. If current category exhausted, move to next
-        3. If all categories exhausted, return empty
+        2. If current category has fewer methods than batch_size, fill from next categories
+        3. If current category exhausted, move to next
+        4. If all categories exhausted, return empty
 
         Args:
             batch_size: Number of methods to pick.
 
         Returns:
-            List of method dicts (empty if all exhausted).
+            Tuple of (list of method dicts, did_fallback).
+            Empty list if all exhausted.
         """
         if not self._active_categories:
             # Fallback: use all categories sorted by priority
-            return self._get_batch_from_all(batch_size)
+            return self._get_batch_from_all(batch_size), False
 
         while self._current_cat_index < len(self._active_categories):
             cat_id = self._active_categories[self._current_cat_index]
@@ -106,13 +108,41 @@ class PaperSampler:
 
             if untried:
                 batch = [self._enrich_with_paper(m) for m in untried[:batch_size]]
-                return batch
+                did_fallback = False
+
+                # Fill from next categories if batch is undersized
+                if len(batch) < batch_size:
+                    remaining = batch_size - len(batch)
+                    batch_ids = {m.get("method_id") for m in batch}
+                    for next_idx in range(self._current_cat_index + 1, len(self._active_categories)):
+                        if remaining <= 0:
+                            break
+                        next_cat = self._active_categories[next_idx]
+                        next_methods = self._methods_by_category.get(next_cat, [])
+                        next_untried = [
+                            m for m in next_methods
+                            if m.get("method_id") not in self._tried_ids
+                            and m.get("method_id") not in batch_ids
+                        ]
+                        next_untried.sort(key=lambda m: {"high": 0, "medium": 1, "low": 2}.get(m.get("confidence", "low"), 2))
+                        for m in next_untried:
+                            if remaining <= 0:
+                                break
+                            batch.append(self._enrich_with_paper(m))
+                            batch_ids.add(m.get("method_id"))
+                            remaining -= 1
+                            did_fallback = True
+
+                    if did_fallback:
+                        print(f"[SAMPLER] Cross-category fallback: filled batch to {len(batch)} methods", flush=True)
+
+                return batch, did_fallback
             else:
                 # Current category exhausted, move to next
                 print(f"[SAMPLER] Category '{cat_id}' exhausted, moving to next.", flush=True)
                 self._current_cat_index += 1
 
-        return []  # All categories exhausted
+        return [], False  # All categories exhausted
 
     def _get_batch_from_all(self, batch_size: int) -> list[dict]:
         """Fallback: pick from all categories sorted by priority."""

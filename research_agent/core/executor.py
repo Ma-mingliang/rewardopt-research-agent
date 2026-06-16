@@ -1095,6 +1095,110 @@ def _save_baseline_files(project_path: Path, work_dir: Path, config: AgentConfig
             shutil.copy2(src, artifacts_dir / f"baseline_{fname}")
 
 
+def _compute_patch_similarity(diff_a: str, diff_b: str) -> float:
+    """Compute similarity between two unified diffs.
+
+    Uses line-level Jaccard similarity of added/removed lines.
+    Returns 0.0-1.0 (1.0 = identical changes).
+    """
+    if not diff_a or not diff_b:
+        return 0.0
+
+    def _extract_changes(diff: str) -> set[str]:
+        changes = set()
+        for line in diff.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("+") and not stripped.startswith("+++"):
+                changes.add(stripped[1:].strip())
+            elif stripped.startswith("-") and not stripped.startswith("---"):
+                changes.add(stripped[1:].strip())
+        return changes
+
+    changes_a = _extract_changes(diff_a)
+    changes_b = _extract_changes(diff_b)
+
+    if not changes_a and not changes_b:
+        return 1.0
+    if not changes_a or not changes_b:
+        return 0.0
+
+    intersection = changes_a & changes_b
+    union = changes_a | changes_b
+    return len(intersection) / len(union) if union else 0.0
+
+
+def _check_candidate_diversity(
+    observer,
+    candidate,
+    candidate_ideas: list[dict],
+    previous_results: list[dict],
+    candidate_id: str = "",
+) -> None:
+    """Check diversity of current candidate against previous ones.
+
+    Emits diversity events and tracks in observer. Does NOT affect accept/reject.
+    """
+    current_diff = candidate.patch_diff or ""
+    current_method_ids = [m.get("method_id", "") for m in (candidate_ideas or [])]
+
+    max_similarity = 0.0
+    is_duplicate_patch = False
+    is_duplicate_method = False
+
+    for prev in previous_results:
+        prev_diff = prev.get("patch_diff", "")
+        # Extract method_ids from source_idea JSON if not directly available
+        prev_methods = prev.get("source_method_ids", [])
+        if not prev_methods:
+            try:
+                prev_idea = json.loads(prev.get("source_idea", "{}"))
+                prev_methods = prev_idea.get("source_method_ids", [])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Patch similarity
+        sim = _compute_patch_similarity(current_diff, prev_diff)
+        if sim > max_similarity:
+            max_similarity = sim
+        if sim >= 0.95:
+            is_duplicate_patch = True
+
+        # Method overlap
+        if prev_methods and current_method_ids:
+            overlap = set(current_method_ids) & set(prev_methods)
+            if overlap:
+                is_duplicate_method = True
+
+    is_low_diversity = max_similarity >= 0.8
+
+    if is_duplicate_patch:
+        observer.emit("candidate_duplicate_detected",
+                       candidate_id=candidate_id,
+                       similarity=round(max_similarity, 4),
+                       reason="identical_patch")
+    elif is_low_diversity:
+        observer.emit("candidate_low_diversity",
+                       candidate_id=candidate_id,
+                       similarity=round(max_similarity, 4))
+
+    observer.emit("candidate_diversity_checked",
+                   candidate_id=candidate_id,
+                   similarity=round(max_similarity, 4),
+                   is_duplicate_patch=is_duplicate_patch,
+                   is_duplicate_method=is_duplicate_method,
+                   is_low_diversity=is_low_diversity,
+                   current_method_ids=current_method_ids)
+
+    observer.track_candidate_diversity(
+        current_diff=current_diff,
+        current_method_ids=current_method_ids,
+        similarity_score=max_similarity,
+        is_duplicate_patch=is_duplicate_patch,
+        is_duplicate_method=is_duplicate_method,
+        is_low_diversity=is_low_diversity,
+    )
+
+
 def _execute_optimizer_phase(
     work_dir: Path,
     config: AgentConfig,
@@ -1294,15 +1398,19 @@ def _execute_optimizer_phase(
         candidate_ideas = ideas
         batch: list[dict] = []
         current_category = None
+        method_fallback = False
         if sampler is not None:
             current_category = sampler.get_current_category()
-            batch = sampler.get_next_batch(batch_size=2)
+            batch, method_fallback = sampler.get_next_batch(batch_size=2)
             if not batch:
                 print(f"\n[STOP] All categories exhausted.", flush=True)
                 break
             candidate_ideas = batch
             cat_display = current_category or "auto"
-            print(f"\n[CATEGORY] Current: {cat_display} | Methods: {[m.get('method_id','')[:20] for m in batch]}", flush=True)
+            fallback_tag = " (cross-category fallback)" if method_fallback else ""
+            print(f"\n[CATEGORY] Current: {cat_display} | Methods: {[m.get('method_id','')[:20] for m in batch]}{fallback_tag}", flush=True)
+            if observer and observer.is_active and method_fallback:
+                observer.track_candidate_diversity(method_selection_fallback=True)
 
         # 2. Propose candidate
         version_id = version_tracker.next_version_id()
@@ -1314,6 +1422,17 @@ def _execute_optimizer_phase(
         propose_kwargs: dict = {}
         if method_pool:
             propose_kwargs["method_pool"] = method_pool
+        # Pass previous candidate info for diversity (v0.8)
+        prev_diffs = [r.get("patch_diff", "") for r in candidate_results if r.get("patch_diff")]
+        prev_method_ids = []
+        for r in candidate_results:
+            try:
+                idea = json.loads(r.get("source_idea", "{}"))
+                prev_method_ids.extend(idea.get("source_method_ids", []))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        propose_kwargs["previous_candidate_diffs"] = prev_diffs
+        propose_kwargs["previous_method_ids"] = prev_method_ids
         candidate = optimizer.propose_candidate(phase, baseline_metrics, candidate_ideas, **propose_kwargs)
         resource_usage["candidates_proposed"] = resource_usage.get("candidates_proposed", 0) + 1
 
@@ -1322,6 +1441,13 @@ def _execute_optimizer_phase(
                           candidate_id=candidate.candidate_id,
                           optimizer=optimizer_name,
                           has_diff=bool(candidate.patch_diff and candidate.patch_diff.strip()))
+
+        # Candidate diversity check (v0.8)
+        if observer and observer.is_active and candidate.patch_diff:
+            _check_candidate_diversity(
+                observer, candidate, candidate_ideas,
+                candidate_results, candidate_id=candidate.candidate_id,
+            )
 
         # Extract version tracking info
         modified_files = extract_modified_files(candidate)

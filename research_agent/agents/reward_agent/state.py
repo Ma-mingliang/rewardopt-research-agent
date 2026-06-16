@@ -47,6 +47,10 @@ class RewardAgentState(TypedDict, total=False):
     method_pool_context: str
     method_pool_ids: list[str]
 
+    # Diversity context (v0.8)
+    previous_candidate_diffs: list[str]
+    previous_method_ids: list[str]
+
     # Output
     final_candidate_status: str  # "ready" | "noop" | "exhausted"
     patch_diff: str | None
