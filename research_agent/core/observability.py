@@ -155,6 +155,8 @@ class RunObserver:
         self._semantic_regeneration_attempts: int = 0
         self._semantic_regeneration_successes: int = 0
         self._semantic_regeneration_failures: int = 0
+        self._semantic_regeneration_syntax_valid_count: int = 0
+        self._semantic_regeneration_syntax_repair_count: int = 0
 
         # System preflight tracking (v0.8.2)
         self._system_preflight_enabled: bool = True
@@ -421,13 +423,23 @@ class RunObserver:
         self._system_preflight_failure_type = failure_type
         self._torch_import_preflight_passed = torch_importable
 
-    def track_semantic_regeneration(self, success: bool) -> None:
-        """Track a semantic regeneration attempt after gate rejection."""
+    def track_semantic_regeneration(self, success: bool, syntax_valid: bool = False, syntax_repaired: bool = False) -> None:
+        """Track a semantic regeneration attempt after gate rejection.
+
+        Args:
+            success: Overall regeneration success (semantic gate + compile + AST).
+            syntax_valid: Whether the patch passed syntax-safe validation on first try.
+            syntax_repaired: Whether syntax-aware repair was needed.
+        """
         self._semantic_regeneration_attempts += 1
         if success:
             self._semantic_regeneration_successes += 1
         else:
             self._semantic_regeneration_failures += 1
+        if syntax_valid:
+            self._semantic_regeneration_syntax_valid_count += 1
+        if syntax_repaired:
+            self._semantic_regeneration_syntax_repair_count += 1
 
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
@@ -541,6 +553,8 @@ class RunObserver:
             "semantic_regeneration_attempts": self._semantic_regeneration_attempts,
             "semantic_regeneration_successes": self._semantic_regeneration_successes,
             "semantic_regeneration_failures": self._semantic_regeneration_failures,
+            "semantic_regeneration_syntax_valid_count": self._semantic_regeneration_syntax_valid_count,
+            "semantic_regeneration_syntax_repair_count": self._semantic_regeneration_syntax_repair_count,
             "event_log": "events.jsonl",
         }
         if extra:

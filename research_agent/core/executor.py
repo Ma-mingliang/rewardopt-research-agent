@@ -200,9 +200,11 @@ def _generate_template_patch(
 ) -> str | None:
     """Generate a template-based reward patch as fallback.
 
-    Uses a simple pattern: add a potential-based shaping term.
-    This ensures at least one semantic patch is generated.
+    Uses safe anchor lines from ProposalContext: only modifies existing reward
+    expressions, uses available_reward_variables, and matches exact indentation.
     """
+    import re
+
     if not proposal_context:
         return None
 
@@ -211,14 +213,14 @@ def _generate_template_patch(
     if not reward_lines:
         return None
 
-    # Parse the first reward expression line to get the line number
-    import re
+    # Parse the first reward expression line to get the line number and content
     first_expr = reward_lines[0] if reward_lines else ""
-    line_match = re.search(r"L(\d+):", first_expr)
+    line_match = re.search(r"L(\d+):\s*(.*)", first_expr)
     if not line_match:
         return None
 
     target_line = int(line_match.group(1))
+    anchor_content = line_match.group(2).strip()  # The actual code on that line
 
     # Get available variables
     available = proposal_context.available_reward_variables
@@ -228,9 +230,9 @@ def _generate_template_patch(
     # Choose a variable for the shaping term
     # Prefer: current_error, angular_velocity, action, observation
     shaping_var = None
-    for candidate in ["current_error", "angular_velocity", "action_norm", "tracking_error", "observation"]:
-        if candidate in available or any(candidate in v for v in available):
-            shaping_var = candidate
+    for prefer in ["current_error", "angular_velocity", "action_norm", "tracking_error", "observation"]:
+        if prefer in available or any(prefer in v for v in available):
+            shaping_var = prefer
             break
 
     if not shaping_var:
@@ -243,19 +245,240 @@ def _generate_template_patch(
     if not shaping_var:
         shaping_var = "current_error"  # Safe default
 
-    # Build the patch
-    indent = " " * (proposal_context.base_indent + 4)  # Method body indent
+    # Build the patch using the actual anchor line content
+    # Method body indent = base_indent + indent_unit
+    body_indent = " " * (proposal_context.base_indent + proposal_context.indent_unit)
     patch = (
         f"--- a/{proposal_context.target_file}\n"
         f"+++ b/{proposal_context.target_file}\n"
         f"@@ -{target_line},3 +{target_line},5 @@\n"
-        f" {indent}reward += tracking_reward\n"
-        f"+{indent}# Potential-based shaping: penalize squared error\n"
-        f"+{indent}shaping_penalty = -0.1 * ({shaping_var} ** 2)\n"
-        f"+{indent}reward += shaping_penalty\n"
+        f" {body_indent}{anchor_content}\n"
+        f"+{body_indent}# Potential-based shaping: penalize squared error\n"
+        f"+{body_indent}shaping_penalty = -0.1 * ({shaping_var} ** 2)\n"
+        f"+{body_indent}reward += shaping_penalty\n"
     )
 
     return patch
+
+
+def _validate_patch_indentation(patch_diff: str) -> tuple[bool, list[str]]:
+    """Deterministic indentation validator for regenerated patches.
+
+    Checks:
+    1. No tab/space mixing in added lines
+    2. Added lines match block header indentation
+    3. No trailing whitespace on added lines
+    4. No excessively long lines (>200 chars)
+
+    Returns (ok, errors) where errors is a list of human-readable descriptions.
+    """
+    if not patch_diff or not patch_diff.strip():
+        return False, ["Empty patch"]
+
+    errors: list[str] = []
+    added_lines: list[str] = []
+
+    for raw_line in patch_diff.splitlines():
+        # Only check added lines (not context or removed)
+        if not raw_line.startswith("+"):
+            continue
+        # Skip diff headers (--- a/...  +++ b/...)
+        if raw_line.startswith("+++") or raw_line.startswith("---"):
+            continue
+        line = raw_line[1:]  # Strip leading +
+        added_lines.append(line)
+
+        # Check 1: tab usage (must use spaces only)
+        leading = ""
+        for ch in line:
+            if ch in (" ", "\t"):
+                leading += ch
+            else:
+                break
+        if "\t" in leading:
+            if " " in leading:
+                errors.append(f"Tab/space mixing in leading whitespace: {repr(leading)}")
+            else:
+                errors.append(f"Tab-only indentation (must use spaces): {repr(leading)}")
+
+        # Check 2: trailing whitespace
+        if line != line.rstrip():
+            errors.append(f"Trailing whitespace: {repr(line)}")
+
+        # Check 3: excessively long line
+        if len(line) > 200:
+            errors.append(f"Line exceeds 200 chars ({len(line)}): {line[:60]}...")
+
+    # Check 4: if we have added lines, verify indentation is reasonable
+    # (all non-empty added lines should have consistent or increasing indentation)
+    non_empty = [l for l in added_lines if l.strip()]
+    if non_empty:
+        indents = []
+        for l in non_empty:
+            indent = len(l) - len(l.lstrip())
+            indents.append(indent)
+        # Detect wildly inconsistent indentation (e.g., mixing 0 and 20 spaces randomly)
+        if indents:
+            min_indent = min(indents)
+            max_indent = max(indents)
+            # If min is 0 and max > 16, likely something is wrong
+            # (top-level code mixed with deeply nested code in same patch)
+            if min_indent == 0 and max_indent > 16:
+                errors.append(
+                    f"Suspicious indent spread: min={min_indent}, max={max_indent}. "
+                    "Added lines mix top-level and deeply nested code."
+                )
+
+    ok = len(errors) == 0
+    return ok, errors
+
+
+def _syntax_safe_compile_check(
+    temp_file: Path,
+    patch_diff: str,
+    original_content: str,
+) -> tuple[bool, str]:
+    """Apply patch to temp copy, validate indentation, compile, and AST parse.
+
+    Returns (ok, error_message).
+    """
+    import ast
+    import re
+    import tempfile
+
+    # Step 1: Apply diff to temp copy
+    try:
+        patched_content = _apply_diff_to_content(original_content, patch_diff)
+    except Exception as e:
+        return False, f"Patch apply failed: {e}"
+
+    if patched_content is None:
+        return False, "Patch produced no changes"
+
+    # Step 2: Indentation validation
+    indent_ok, indent_errors = _validate_patch_indentation(patch_diff)
+    if not indent_ok:
+        return False, f"Indentation errors: {'; '.join(indent_errors)}"
+
+    # Step 3: Compile check
+    try:
+        compile(patched_content.lstrip("﻿"), str(temp_file), "exec")
+    except SyntaxError as e:
+        return False, f"Compilation failed: {e.__class__.__name__}: {e.msg} (line {e.lineno})"
+
+    # Step 4: AST parse check
+    try:
+        tree = ast.parse(patched_content.lstrip("﻿"))
+        # Quick sanity: ensure at least one function/class exists
+        has_func = any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in ast.walk(tree))
+        has_class = any(isinstance(node, ast.ClassDef) for node in ast.walk(tree))
+        if not has_func and not has_class:
+            return False, "AST parse succeeded but no function/class found"
+    except SyntaxError as e:
+        return False, f"AST parse failed: {e.__class__.__name__}: {e.msg} (line {e.lineno})"
+
+    return True, ""
+
+
+def _apply_diff_to_content(original: str, diff: str) -> str | None:
+    """Apply a unified diff to original content. Returns patched content or None.
+
+    This is a simple line-based applier for small, targeted patches.
+    Only handles single-hunk patches.
+    """
+    import re
+
+    # Parse hunk header
+    hunk_match = re.search(r"@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@", diff)
+    if not hunk_match:
+        return None
+
+    start_line = int(hunk_match.group(1))
+    original_lines = original.splitlines(keepends=True)
+
+    # Collect diff lines
+    diff_lines = diff.splitlines()
+    # Find lines after hunk header
+    hunk_start = 0
+    for i, line in enumerate(diff_lines):
+        if line.startswith("@@"):
+            hunk_start = i + 1
+            break
+
+    # Build new lines from diff (must add \n since splitlines strips them)
+    new_lines: list[str] = []
+    for line in diff_lines[hunk_start:]:
+        if line.startswith("+"):
+            new_lines.append(line[1:] + "\n")
+        elif line.startswith("-"):
+            continue  # Removed line
+        elif line.startswith(" "):
+            new_lines.append(line[1:] + "\n")
+        # Skip any trailing garbage
+
+    # Replace lines in original
+    result_lines = original_lines[:start_line - 1] + new_lines
+    # Add remaining original lines after the hunk
+    removed_count = int(hunk_match.group(2) or "0")
+    remaining_start = start_line - 1 + removed_count
+    if remaining_start < len(original_lines):
+        result_lines.extend(original_lines[remaining_start:])
+
+    return "".join(result_lines)
+
+
+def _attempt_syntax_aware_repair(
+    optimizer,
+    candidate,
+    proposal_context,
+    compile_error: str,
+    raw_response: str,
+) -> str | None:
+    """Attempt to fix IndentationError using semantic context.
+
+    Returns repaired diff or None.
+    """
+    from research_agent.agents.reward_agent.prompts import (
+        SYNTAX_AWARE_REPAIR_SYSTEM_PROMPT,
+        SYNTAX_AWARE_REPAIR_PROMPT,
+    )
+
+    llm = getattr(optimizer, "llm_client", None)
+    if llm is None:
+        return None
+
+    if not proposal_context:
+        return None
+
+    # Build available variables
+    available_vars = ", ".join(proposal_context.available_reward_variables) if proposal_context.available_reward_variables else "(none)"
+
+    user_prompt = SYNTAX_AWARE_REPAIR_PROMPT.format(
+        function_name=proposal_context.function_name,
+        target_file=proposal_context.target_file,
+        function_start_line=proposal_context.function_start_line,
+        function_end_line=proposal_context.function_end_line,
+        base_indent=proposal_context.base_indent,
+        indent_unit=proposal_context.indent_unit,
+        line_numbered_context=proposal_context.line_numbered_context,
+        available_reward_variables=available_vars,
+        previous_diff=candidate.patch_diff[:1000] if candidate.patch_diff else "(empty)",
+        compile_error=compile_error,
+        raw_response=raw_response[:500] if raw_response else "(none)",
+    )
+
+    response = llm.call(
+        system_prompt=SYNTAX_AWARE_REPAIR_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        max_tokens=4096,
+        response_format="text",
+    )
+
+    if not response or not response.content:
+        return None
+
+    diff = _extract_diff_from_response(response.content)
+    return diff
 
 
 def _auto_fix_compilation(
@@ -1855,17 +2078,79 @@ def _execute_optimizer_phase(
                             previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
                         )
                         if new_decision.passed:
-                            # Regeneration successful!
-                            candidate.patch_diff = new_diff
-                            candidate.description = f"[regenerated] {candidate.description}"
-                            regeneration_successful = True
-                            if observer and observer.is_active:
-                                observer.emit("semantic_regeneration_success",
-                                              candidate_id=candidate.candidate_id,
-                                              attempt=regen_attempt + 1)
-                                observer.track_semantic_regeneration(success=True)
-                            print(f"[REGENERATION] {version_id}: semantic patch generated on attempt {regen_attempt + 1}", flush=True)
-                            break
+                            # v0.8.4+: Syntax-safe validation before declaring success
+                            env_path = Path(project_path) / "env.py"
+                            if env_path.exists():
+                                original_env = env_path.read_text(encoding="utf-8-sig")
+                                compile_ok, compile_err = _syntax_safe_compile_check(
+                                    temp_file=env_path,
+                                    patch_diff=new_diff,
+                                    original_content=original_env,
+                                )
+                            else:
+                                compile_ok, compile_err = True, ""  # No env.py to check against
+
+                            if compile_ok:
+                                # Full success: semantic + syntax valid
+                                candidate.patch_diff = new_diff
+                                candidate.description = f"[regenerated] {candidate.description}"
+                                regeneration_successful = True
+                                if observer and observer.is_active:
+                                    observer.emit("semantic_regeneration_success",
+                                                  candidate_id=candidate.candidate_id,
+                                                  attempt=regen_attempt + 1,
+                                                  syntax_valid=True)
+                                    observer.track_semantic_regeneration(success=True, syntax_valid=True)
+                                print(f"[REGENERATION] {version_id}: syntax-valid semantic patch on attempt {regen_attempt + 1}", flush=True)
+                                break
+                            else:
+                                # Semantic gate passed but compile failed
+                                print(f"[REGENERATION] {version_id}: syntax check failed on attempt {regen_attempt + 1}: {compile_err}", flush=True)
+                                if observer and observer.is_active:
+                                    observer.emit("semantic_regeneration_syntax_failed",
+                                                  candidate_id=candidate.candidate_id,
+                                                  attempt=regen_attempt + 1,
+                                                  compile_error=compile_err[:200])
+
+                                # Route IndentationError to syntax-aware repair
+                                if "IndentationError" in compile_err or "indent" in compile_err.lower():
+                                    print(f"[REGENERATION] {version_id}: attempting syntax-aware repair...", flush=True)
+                                    repaired_diff = _attempt_syntax_aware_repair(
+                                        optimizer=optimizer,
+                                        candidate=candidate,
+                                        proposal_context=proposal_ctx,
+                                        compile_error=compile_err,
+                                        raw_response=new_diff,
+                                    )
+                                    if repaired_diff and repaired_diff.strip():
+                                        # Verify repaired diff compiles
+                                        rep_ok, rep_err = _syntax_safe_compile_check(
+                                            temp_file=env_path,
+                                            patch_diff=repaired_diff,
+                                            original_content=original_env,
+                                        )
+                                        if rep_ok:
+                                            # Re-check semantic gate on repaired diff
+                                            rep_decision = analyze_patch_semantics(
+                                                diff_text=repaired_diff,
+                                                previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
+                                            )
+                                            if rep_decision.passed:
+                                                candidate.patch_diff = repaired_diff
+                                                candidate.description = f"[syntax-repaired] {candidate.description}"
+                                                regeneration_successful = True
+                                                if observer and observer.is_active:
+                                                    observer.emit("semantic_regeneration_success",
+                                                                  candidate_id=candidate.candidate_id,
+                                                                  attempt=regen_attempt + 1,
+                                                                  syntax_repaired=True)
+                                                    observer.track_semantic_regeneration(success=True, syntax_repaired=True)
+                                                print(f"[REGENERATION] {version_id}: syntax-repaired patch accepted on attempt {regen_attempt + 1}", flush=True)
+                                                break
+                                            else:
+                                                print(f"[REGENERATION] {version_id}: repaired patch failed semantic gate: {rep_decision.reason}", flush=True)
+                                        else:
+                                            print(f"[REGENERATION] {version_id}: repaired patch still fails compile: {rep_err}", flush=True)
                         else:
                             if observer and observer.is_active:
                                 observer.emit("semantic_regeneration_attempt_failed",
@@ -1894,21 +2179,36 @@ def _execute_optimizer_phase(
                         candidate_ideas=candidate_ideas,
                     )
                     if template_patch:
-                        template_decision = analyze_patch_semantics(
-                            diff_text=template_patch,
-                            previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
-                        )
-                        if template_decision.passed:
-                            candidate.patch_diff = template_patch
-                            candidate.description = f"[template-fallback] {candidate.description}"
-                            regeneration_successful = True
-                            if observer and observer.is_active:
-                                observer.emit("semantic_regeneration_template_success",
-                                              candidate_id=candidate.candidate_id)
-                                observer.track_semantic_regeneration(success=True)
-                            print(f"[REGENERATION] {version_id}: template fallback patch accepted", flush=True)
+                        # Syntax-safe check on template patch
+                        env_path = Path(project_path) / "env.py"
+                        if env_path.exists():
+                            original_env = env_path.read_text(encoding="utf-8-sig")
+                            tpl_ok, tpl_err = _syntax_safe_compile_check(
+                                temp_file=env_path,
+                                patch_diff=template_patch,
+                                original_content=original_env,
+                            )
                         else:
-                            print(f"[REGENERATION] {version_id}: template fallback rejected: {template_decision.reason}", flush=True)
+                            tpl_ok, tpl_err = True, ""
+
+                        if tpl_ok:
+                            template_decision = analyze_patch_semantics(
+                                diff_text=template_patch,
+                                previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
+                            )
+                            if template_decision.passed:
+                                candidate.patch_diff = template_patch
+                                candidate.description = f"[template-fallback] {candidate.description}"
+                                regeneration_successful = True
+                                if observer and observer.is_active:
+                                    observer.emit("semantic_regeneration_template_success",
+                                                  candidate_id=candidate.candidate_id)
+                                    observer.track_semantic_regeneration(success=True, syntax_valid=True)
+                                print(f"[REGENERATION] {version_id}: template fallback patch accepted", flush=True)
+                            else:
+                                print(f"[REGENERATION] {version_id}: template fallback rejected: {template_decision.reason}", flush=True)
+                        else:
+                            print(f"[REGENERATION] {version_id}: template fallback failed syntax check: {tpl_err}", flush=True)
                     else:
                         print(f"[REGENERATION] {version_id}: no template patch generated", flush=True)
 

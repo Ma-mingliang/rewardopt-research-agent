@@ -178,3 +178,150 @@ Summary:
 2. Analyze regeneration success rate across different rejection reasons
 3. Consider adding more few-shot examples for different reward patterns
 4. Monitor for new failure modes (e.g., regeneration producing invalid diffs)
+
+---
+
+## v0.8.4+ Update: Syntax-Safe Semantic Regeneration
+
+**Date**: 2026-06-16 (continued)
+
+### Problem
+
+The v0.8.4 regeneration could produce patches that passed the semantic gate but failed to compile due to indentation errors. The success definition was too loose: `semantic_regeneration_success` was recorded when a semantic-looking diff was extracted, even if it wouldn't compile.
+
+### Solution
+
+Tightened the success definition and added syntax-safe validation:
+
+#### 1. Tightened Success Definition
+
+`semantic_regeneration_success` now requires ALL of:
+- Diff extracted from LLM response
+- Patch applied to temp copy of env.py
+- Semantic gate passed (reward terms changed)
+- Indentation validation passed (no tabs, no mixing, no trailing whitespace)
+- Compile check passed (`compile()`)
+- AST parse passed (`ast.parse()`)
+
+#### 2. Syntax-Safe Regeneration Prompt
+
+Updated `SEMANTIC_REGENERATION_SYSTEM_PROMPT` with strict indentation rules:
+- Use EXACTLY 4 spaces per indentation level
+- No tabs allowed
+- Match base indentation of target function
+- Every added line (+) must have valid Python indentation
+
+#### 3. Deterministic Indentation Validator
+
+Added `_validate_patch_indentation()` in `executor.py`:
+- Rejects tab/space mixing
+- Rejects tab-only indentation (must use spaces)
+- Rejects trailing whitespace on added lines
+- Rejects excessively long lines (>200 chars)
+- Detects suspicious indent spread (mixing top-level and deeply nested)
+
+#### 4. Syntax-Safe Compile Check
+
+Added `_syntax_safe_compile_check()` in `executor.py`:
+- Applies diff to temp copy of env.py via `_apply_diff_to_content()`
+- Runs indentation validator
+- Runs `compile()` on patched content
+- Runs `ast.parse()` to verify AST integrity
+
+#### 5. IndentationError → Syntax-Aware Repair
+
+When compile fails with IndentationError:
+- Calls `_attempt_syntax_aware_repair()` with ProposalContext + semantic diff + compile traceback
+- Repair prompt: `SYNTAX_AWARE_REPAIR_SYSTEM_PROMPT` / `SYNTAX_AWARE_REPAIR_PROMPT`
+- Re-verifies repaired diff: compile + semantic gate
+- Only accepts if BOTH pass
+
+#### 6. Strengthened Template Fallback
+
+`_generate_template_patch()` now:
+- Uses actual anchor line content from `existing_reward_expression_lines`
+- Uses `indent_unit` and `base_indent` from ProposalContext
+- Runs through syntax-safe compile check before acceptance
+
+#### 7. Fixed `_apply_diff_to_content()`
+
+Bug fix: `splitlines()` strips newlines, causing patched content to be a single concatenated line. Fixed by appending `\n` to each line.
+
+#### 8. New Observability Fields
+
+```json
+{
+  "semantic_regeneration_syntax_valid_count": 1,
+  "semantic_regeneration_syntax_repair_count": 0
+}
+```
+
+- `syntax_valid_count`: Patches that passed syntax-safe validation on first try
+- `syntax_repair_count`: Patches that required syntax-aware repair
+
+### Test Results
+
+#### New Tests (15 tests)
+
+```
+tests/test_semantic_regeneration_syntax.py::TestValidatePatchIndentation (7 tests) PASSED
+tests/test_semantic_regeneration_syntax.py::TestApplyDiffToContent (2 tests) PASSED
+tests/test_semantic_regeneration_syntax.py::TestSyntaxSafeCompileCheck (2 tests) PASSED
+tests/test_semantic_regeneration_syntax.py::TestGenerateTemplatePatchSafeAnchors (2 tests) PASSED
+tests/test_semantic_regeneration_syntax.py::TestAttemptSyntaxAwareRepair (2 tests) PASSED
+```
+
+#### Full Test Suite
+
+```
+484 passed, 1 failed (pre-existing Windows path issue in test_smoke.py)
+```
+
+#### Mock Smoke Test
+
+```
+--mock-llm --max-iterations 1 --batch-size 1 --proposal-only
+Result: candidate rejected as empty_patch (expected in mock mode)
+Summary: semantic_regeneration_attempts=0, baseline_guard_passed=true
+New fields present: semantic_regeneration_syntax_valid_count=0, semantic_regeneration_syntax_repair_count=0
+```
+
+#### Real Proposal-Only Campaign
+
+```
+--max-iterations 1 --batch-size 3 --proposal-only --max-semantic-regeneration-attempts 2
+
+Candidate 1 (v0748):
+- Initial patch: cosmetic → rejected by semantic gate
+- Regeneration attempt 1: LLM produced angular_velocity penalty → IndentationError on line 968
+  - Syntax-aware repair attempted → also failed
+- Regeneration attempt 2: LLM produced stability_penalty → PASSED all checks
+  - Semantic gate: PASSED
+  - Indentation validation: PASSED
+  - Compile check: PASSED
+  - AST parse: PASSED
+- Result: syntax-valid semantic patch accepted
+
+Summary:
+- candidates_total: 1
+- candidates_proposal_only_validated: 1
+- semantic_regeneration_attempts: 1
+- semantic_regeneration_successes: 1
+- semantic_regeneration_syntax_valid_count: 1
+- baseline_guard_passed: true
+- env.py hash: e19703467be71e20 (unchanged)
+```
+
+### Files Modified (syntax-safe update)
+
+| File | Changes |
+|------|---------|
+| `research_agent/core/executor.py` | Added `_validate_patch_indentation()`, `_syntax_safe_compile_check()`, `_apply_diff_to_content()`, `_attempt_syntax_aware_repair()`; updated regeneration loop with syntax-safe validation |
+| `research_agent/core/observability.py` | Added `semantic_regeneration_syntax_valid_count`, `semantic_regeneration_syntax_repair_count` counters |
+| `research_agent/agents/reward_agent/prompts.py` | Updated `SEMANTIC_REGENERATION_SYSTEM_PROMPT` with indentation rules; added `SYNTAX_AWARE_REPAIR_SYSTEM_PROMPT`, `SYNTAX_AWARE_REPAIR_PROMPT` |
+
+### Files Created (syntax-safe update)
+
+| File | Purpose |
+|------|---------|
+| `tests/test_semantic_regeneration_syntax.py` | 15 tests for syntax-safe validation |

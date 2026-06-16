@@ -286,9 +286,17 @@ You MUST generate a VALID semantic reward patch this time. A valid patch:
 - Uses ONLY variables from the Available Reward Variables list
 - Is NOT blank lines, comments, whitespace, or formatting
 
+CRITICAL INDENTATION RULES:
+- Use EXACTLY 4 spaces per indentation level. Do NOT use tabs.
+- Match the base indentation of the target function exactly.
+- Every added line (+) must have valid Python indentation.
+- Look at the line-numbered source to see the EXACT indentation pattern.
+- If the function body is indented 8 spaces, your added lines must also use 8 spaces for the same level.
+- Test mentally: would your lines compile if pasted into the function?
+
 If you cannot generate a valid semantic patch, output an empty diff: "--- a/file\n+++ b/file\n"
 
-Output ONLY a unified diff. No markdown, no explanation."""
+Output ONLY a unified diff. No markdown fences, no explanation."""
 
 SEMANTIC_REGENERATION_PROMPT = """## Reward Function: {function_name}
 ## File: {target_file}
@@ -335,11 +343,65 @@ SEMANTIC_REGENERATION_PROMPT = """## Reward Function: {function_name}
 3. A blank line, comment, or whitespace change is NOT a valid reward patch.
 4. Choose one reward term template from the few-shot examples.
 5. Do NOT repeat the rejected patch above.
+6. CRITICAL: Every added line (+) MUST use EXACTLY 4 spaces per indent level.
+7. CRITICAL: Match the base indentation of the function body exactly.
+8. CRITICAL: Do NOT use tabs. Use ONLY spaces.
 
 ## Instructions
 Generate a VALID semantic reward patch. Use one of the few-shot templates as inspiration.
 The patch must add or modify a real reward term using available variables.
 Use exact line numbers from the source. Match base indentation exactly.
+
+Output ONLY a unified diff. No markdown fences, no explanation."""
+
+
+# --- v0.8.4: Syntax-aware repair prompts ---
+
+SYNTAX_AWARE_REPAIR_SYSTEM_PROMPT = """You are a Python syntax repair specialist. A semantic reward patch was generated but failed to compile due to indentation errors.
+
+Your task: fix ONLY the indentation/syntax issues while preserving the semantic meaning of the patch.
+
+HARD RULES:
+- Fix indentation errors ONLY. Do NOT change the reward logic.
+- Use EXACTLY {indent_unit} spaces per indentation level (this project does NOT use tabs).
+- Match the base indentation of the target function ({base_indent} spaces for method body).
+- Every added line (+) MUST have valid Python indentation.
+- Output ONLY a unified diff. No markdown, no explanation.
+
+The diff must start with --- / +++ / @@ headers and contain corrected lines."""
+
+SYNTAX_AWARE_REPAIR_PROMPT = """## Reward Function: {function_name}
+## File: {target_file}
+## Lines: {function_start_line}-{function_end_line}
+## Base indentation: {base_indent} spaces, indent unit: {indent_unit} spaces
+
+## Line-Numbered Source (reference for correct indentation)
+```
+{line_numbered_context}
+```
+
+## Available Reward Variables
+{available_reward_variables}
+
+## Previous Patch (has indentation errors)
+```
+{previous_diff}
+```
+
+## Compilation Error
+{compile_error}
+
+## Original LLM Response (may contain the intended patch)
+```
+{raw_response}
+```
+
+## Instructions
+Fix the indentation/syntax errors in the previous patch. The patch should:
+1. Use EXACTLY {indent_unit} spaces per indent level
+2. Match the base indentation of the function ({base_indent} spaces for method body)
+3. Preserve the semantic meaning (reward terms, penalties, etc.)
+4. Be a valid unified diff starting with --- / +++ / @@
 
 Output ONLY a unified diff. No markdown fences, no explanation."""
 
