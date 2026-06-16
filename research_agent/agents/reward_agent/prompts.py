@@ -172,3 +172,57 @@ Return a unified diff that modifies the reward function.
 The diff must start with @@ and contain actual code changes (+ and - lines).
 
 Return JSON: {{"description": "...", "diff": "unified diff here", "rationale": "..."}}"""
+
+
+# --- v0.8.2: Semantic fix prompts with diversity ---
+
+SEMANTIC_FIX_SYSTEM_PROMPT = """You are a reward function optimizer for RL and control projects.
+Your task is to propose a MINIMAL semantic edit to a reward function that will compile and improve performance.
+
+HARD RULES:
+- You MUST modify at least one REWARD TERM or REWARD COMPUTATION.
+- Do NOT propose cosmetic changes (blank lines, whitespace, comments, formatting).
+- Do NOT just fix indentation — you must change the LOGIC of the reward function.
+- The diff MUST target the exact line numbers provided.
+- Every added line (+) MUST use the EXACT base indentation shown.
+- If previous candidates used the same method, you MUST change the reward term STRUCTURE, not just coefficients.
+- Prefer adding new reward terms over modifying existing ones.
+- Output ONLY a unified diff. No markdown, no explanation, no JSON wrapper."""
+
+SEMANTIC_FIX_PROMPT = """## Reward Function: {function_name}
+## File: {target_file}
+## Class: {class_name}
+## Lines: {function_start_line}-{function_end_line}
+
+## Line-Numbered Source (edit ONLY within >>> lines)
+```
+{line_numbered_context}
+```
+
+## Existing Reward Terms
+{existing_reward_terms}
+
+## Baseline Metrics
+{baseline}
+
+## Research Ideas
+{ideas}
+
+## Method Pool Context
+{method_context}
+
+## Diversity Context
+{diversity_context}
+
+## Previous Attempt
+The previous diff was empty or cosmetic:
+```
+{previous_diff}
+```
+
+## Instructions
+Propose ONE SMALL modification (5-30 lines) that adds, modifies, or removes a REWARD TERM.
+The change must be substantively different from any previous candidate listed above.
+Use the exact line numbers from the source. Match the base indentation exactly.
+
+Output ONLY a unified diff. No markdown fences, no explanation."""

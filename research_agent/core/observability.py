@@ -136,6 +136,24 @@ class RunObserver:
         self._previous_candidate_diffs: list[str] = []
         self._previous_method_ids: list[str] = []
 
+        # Semantic patch gate tracking (v0.8.2)
+        self._semantic_gate_enabled: bool = True
+        self._semantic_gate_passed_count: int = 0
+        self._semantic_gate_rejected_count: int = 0
+        self._cosmetic_patch_rejected_count: int = 0
+        self._no_reward_term_change_count: int = 0
+        self._semantic_gate_rejection_reasons: dict[str, int] = {}
+
+        # Cross-iteration duplicate tracking (v0.8.2)
+        self._cross_iteration_duplicate_patch_count: int = 0
+        self._cross_iteration_similarity_max: float = 0.0
+
+        # System preflight tracking (v0.8.2)
+        self._system_preflight_enabled: bool = True
+        self._system_preflight_passed: bool = True
+        self._system_preflight_failure_type: str = ""
+        self._torch_import_preflight_passed: bool = True
+
     def emit(self, event_type: str, **fields: Any) -> None:
         """Append a structured event to events.jsonl."""
         if self._closed:
@@ -354,6 +372,45 @@ class RunObserver:
         if current_method_ids:
             self._previous_method_ids.extend(current_method_ids)
 
+    def track_semantic_gate(
+        self,
+        passed: bool,
+        reason: str = "",
+        cosmetic_only: bool = False,
+        reward_terms_changed: bool = False,
+    ) -> None:
+        """Track semantic patch gate results."""
+        self._semantic_gate_enabled = True
+        if passed:
+            self._semantic_gate_passed_count += 1
+        else:
+            self._semantic_gate_rejected_count += 1
+            self._semantic_gate_rejection_reasons[reason] = (
+                self._semantic_gate_rejection_reasons.get(reason, 0) + 1
+            )
+            if cosmetic_only:
+                self._cosmetic_patch_rejected_count += 1
+            if not reward_terms_changed:
+                self._no_reward_term_change_count += 1
+
+    def track_cross_iteration_duplicate(self, similarity: float) -> None:
+        """Track cross-iteration duplicate detection."""
+        self._cross_iteration_duplicate_patch_count += 1
+        if similarity > self._cross_iteration_similarity_max:
+            self._cross_iteration_similarity_max = similarity
+
+    def track_system_preflight(
+        self,
+        passed: bool,
+        failure_type: str = "",
+        torch_importable: bool = True,
+    ) -> None:
+        """Track system preflight results."""
+        self._system_preflight_enabled = True
+        self._system_preflight_passed = passed
+        self._system_preflight_failure_type = failure_type
+        self._torch_import_preflight_passed = torch_importable
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -449,6 +506,18 @@ class RunObserver:
             "duplicate_method_count": self._duplicate_method_count,
             "low_diversity_candidate_count": self._low_diversity_candidate_count,
             "method_selection_fallback_count": self._method_selection_fallback_count,
+            "semantic_gate_enabled": self._semantic_gate_enabled,
+            "semantic_gate_passed_count": self._semantic_gate_passed_count,
+            "semantic_gate_rejected_count": self._semantic_gate_rejected_count,
+            "cosmetic_patch_rejected_count": self._cosmetic_patch_rejected_count,
+            "no_reward_term_change_count": self._no_reward_term_change_count,
+            "semantic_gate_rejection_reasons": dict(self._semantic_gate_rejection_reasons),
+            "cross_iteration_duplicate_patch_count": self._cross_iteration_duplicate_patch_count,
+            "cross_iteration_similarity_max": round(self._cross_iteration_similarity_max, 4),
+            "system_preflight_enabled": self._system_preflight_enabled,
+            "system_preflight_passed": self._system_preflight_passed,
+            "system_preflight_failure_type": self._system_preflight_failure_type,
+            "torch_import_preflight_passed": self._torch_import_preflight_passed,
             "event_log": "events.jsonl",
         }
         if extra:

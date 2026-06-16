@@ -22,6 +22,11 @@ from research_agent.core.patch_repair import (
     parse_repair_response,
     validate_repaired_diff_on_temp_copy,
 )
+from research_agent.core.semantic_patch_gate import (
+    SemanticPatchDecision,
+    analyze_patch_semantics,
+)
+from research_agent.core.system_preflight import run_system_preflight
 
 
 def _auto_fix_compilation(
@@ -1375,6 +1380,7 @@ def _execute_optimizer_phase(
     candidates_evaluated = 0
     best_candidate = None
     candidate_results = []
+    candidate_diff_history: list[dict] = []  # v0.8.2: cross-iteration tracking
 
     # Checkpoint base directory
     checkpoint_base = project_path / "model" / "checkpoints"
@@ -1382,8 +1388,42 @@ def _execute_optimizer_phase(
     # Stopping: only wall_clock and category exhaustion
     wall_clock_limit = config.budget.wall_clock_hours * 3600
     start_time = time.monotonic()
+    iteration_count = 0  # v0.8.2: cross-iteration tracking
+
+    # v0.8.2: System preflight — detect Windows CUDA/pagefile issues before training
+    if observer and observer.is_active:
+        observer.emit("system_preflight_start")
+    preflight = run_system_preflight(execution_python=execution_python)
+    if observer and observer.is_active:
+        if preflight.passed:
+            observer.emit("system_preflight_pass",
+                          torch_importable=preflight.torch_importable,
+                          cuda_available=preflight.cuda_available)
+        else:
+            observer.emit("system_preflight_failed",
+                          failure_type=preflight.failure_type,
+                          error_message=preflight.error_message[:200],
+                          fix_hint=preflight.fix_hint)
+        observer.track_system_preflight(
+            passed=preflight.passed,
+            failure_type=preflight.failure_type,
+            torch_importable=preflight.torch_importable,
+        )
+    if not preflight.passed and preflight.failure_type == "infra_windows_pagefile_too_small":
+        print(f"\n[STOP] System preflight failed: {preflight.failure_type}", flush=True)
+        print(f"  {preflight.fix_hint}", flush=True)
+        if observer and observer.is_active:
+            observer.write_summary()
+        return {
+            "status": "failed",
+            "failure_type": preflight.failure_type,
+            "error_message": preflight.error_message,
+            "fix_hint": preflight.fix_hint,
+        }
 
     while True:
+        iteration_count += 1
+
         # Check wall clock
         elapsed = time.monotonic() - start_time
         if elapsed >= wall_clock_limit:
@@ -1495,6 +1535,92 @@ def _execute_optimizer_phase(
 
             candidate_results.append(candidate.to_dict())
             continue
+
+        # v0.8.2: Semantic patch gate — reject cosmetic/no-reward-term patches before train
+        prev_diffs_for_gate = [h["diff"] for h in candidate_diff_history]
+        semantic_decision = analyze_patch_semantics(
+            diff_text=candidate.patch_diff,
+            previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
+        )
+        if not semantic_decision.passed:
+            candidate.status = "rejected"
+            candidate.rejection_reason = semantic_decision.reason
+            optimizer._log_candidate(candidate)
+            if observer and observer.is_active:
+                observer.emit("semantic_patch_gate_reject",
+                              candidate_id=candidate.candidate_id,
+                              reason=semantic_decision.reason,
+                              semantic_change_detected=semantic_decision.semantic_change_detected,
+                              cosmetic_only=semantic_decision.cosmetic_only,
+                              reward_terms_changed=semantic_decision.reward_terms_changed,
+                              changed_line_count=semantic_decision.changed_line_count)
+                observer.track_candidate("rejected", rejection_reason=semantic_decision.reason)
+                observer.track_semantic_gate(
+                    passed=False,
+                    reason=semantic_decision.reason,
+                    cosmetic_only=semantic_decision.cosmetic_only,
+                    reward_terms_changed=semantic_decision.reward_terms_changed,
+                )
+            _mark_batch("semantic_gate_rejected", reason=semantic_decision.reason)
+            version_tracker.log_version(
+                version_id=version_id,
+                candidate_id=candidate.candidate_id,
+                reward_formula=reward_formula,
+                modified_files=modified_files,
+                metrics_before=baseline_metrics,
+                metrics_after=None,
+                accepted=False,
+                rejection_reason=semantic_decision.reason,
+                source_methods=source_methods,
+                description=candidate.description,
+            )
+            # Record in cross-iteration history even if rejected
+            candidate_diff_history.append({
+                "candidate_id": candidate.candidate_id,
+                "iteration": iteration_count,
+                "diff": candidate.patch_diff,
+                "method_ids": [m.get("method_id", "") for m in candidate_ideas],
+                "decision": "semantic_gate_rejected",
+                "reason": semantic_decision.reason,
+            })
+            candidate_results.append(candidate.to_dict())
+            continue
+        else:
+            if observer and observer.is_active:
+                observer.emit("semantic_patch_gate_pass",
+                              candidate_id=candidate.candidate_id,
+                              reward_terms_added=semantic_decision.reward_terms_added,
+                              reward_terms_removed=semantic_decision.reward_terms_removed,
+                              coefficient_only_change=semantic_decision.coefficient_only_change)
+                observer.track_semantic_gate(
+                    passed=True,
+                    reason=semantic_decision.reason,
+                    cosmetic_only=False,
+                    reward_terms_changed=True,
+                )
+
+        # Cross-iteration duplicate check (v0.8.2)
+        if prev_diffs_for_gate:
+            max_cross_sim = 0.0
+            for prev_d in prev_diffs_for_gate:
+                sim = _compute_patch_similarity(candidate.patch_diff, prev_d)
+                if sim > max_cross_sim:
+                    max_cross_sim = sim
+            if max_cross_sim >= 0.95:
+                if observer and observer.is_active:
+                    observer.emit("cross_iteration_duplicate_detected",
+                                  candidate_id=candidate.candidate_id,
+                                  similarity=round(max_cross_sim, 4))
+                observer.track_cross_iteration_duplicate(max_cross_sim)
+
+        # Record in cross-iteration history
+        candidate_diff_history.append({
+            "candidate_id": candidate.candidate_id,
+            "iteration": iteration_count,
+            "diff": candidate.patch_diff,
+            "method_ids": [m.get("method_id", "") for m in candidate_ideas],
+            "decision": "passed",
+        })
 
         # 3. Apply patch and validate compilation (with syntax-aware LLM repair)
         patch_applied = False

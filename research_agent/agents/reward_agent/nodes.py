@@ -24,6 +24,8 @@ from research_agent.agents.reward_agent.prompts import (
     FIX_SYSTEM_PROMPT,
     PROPOSE_SYSTEM_PROMPT,
     PROPOSE_USER_PROMPT,
+    SEMANTIC_FIX_PROMPT,
+    SEMANTIC_FIX_SYSTEM_PROMPT,
 )
 from research_agent.core.proposal_context import (
     ProposalContext,
@@ -282,6 +284,23 @@ def _build_context_proposal_prompt(state: RewardAgentState) -> tuple[str, str] |
     return sys_prompt, user_prompt
 
 
+def _build_diversity_context_string(state: RewardAgentState) -> str:
+    """Build diversity context string from state for reuse in fix prompts."""
+    prev_diffs = state.get("previous_candidate_diffs", [])
+    prev_methods = state.get("previous_method_ids", [])
+    diversity_parts = []
+    if prev_methods:
+        diversity_parts.append(f"Previously tried method IDs: {', '.join(set(prev_methods))}")
+    if prev_diffs:
+        diversity_parts.append(f"Previous candidates produced {len(prev_diffs)} patch(es). Your patch MUST be substantively different.")
+        for i, d in enumerate(prev_diffs[-2:], 1):
+            diff_preview = d.strip()[:200]
+            diversity_parts.append(f"  Previous patch {i}: {diff_preview}...")
+    if not diversity_parts:
+        diversity_parts.append("(No previous candidates in this batch)")
+    return "\n".join(diversity_parts)
+
+
 def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
     """Call LLM to propose a reward modification.
 
@@ -370,7 +389,7 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
         if diff:
             desc = "Context-grounded proposal"
 
-    # Empty diff retry sub-loop
+    # Empty diff retry sub-loop (v0.8.2: use semantic fix prompt with diversity)
     empty_attempt = 0
     max_empty = state.get("max_empty_diff_attempts", 3)
     while not diff and empty_attempt < max_empty:
@@ -378,9 +397,28 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
         print(f"[LLM] Empty diff returned, retry {empty_attempt}/{max_empty}", flush=True)
 
         if use_context:
-            retry_sys, retry_user = ctx_prompt
-            # Add emphasis on non-empty diff
-            retry_user += "\n\nCRITICAL: You MUST output a non-empty unified diff. Start with --- or @@."
+            # v0.8.2: Use semantic fix prompt with diversity rules on empty diff
+            proposal_context = state.get("proposal_context")
+            if proposal_context and empty_attempt >= 1:
+                diversity_context = _build_diversity_context_string(state)
+                retry_sys = SEMANTIC_FIX_SYSTEM_PROMPT
+                retry_user = SEMANTIC_FIX_PROMPT.format(
+                    function_name=getattr(proposal_context, "function_name", "reward"),
+                    target_file=state.get("file_name", "env.py"),
+                    class_name=getattr(proposal_context, "class_name", ""),
+                    function_start_line=getattr(proposal_context, "function_start_line", 0),
+                    function_end_line=getattr(proposal_context, "function_end_line", 0),
+                    line_numbered_context=getattr(proposal_context, "line_numbered_context", code),
+                    existing_reward_terms=getattr(proposal_context, "existing_reward_terms", ""),
+                    baseline=baseline_str,
+                    ideas=ideas_str,
+                    method_context=method_context,
+                    diversity_context=diversity_context,
+                    previous_diff=diff or "(empty)",
+                )
+            else:
+                retry_sys, retry_user = ctx_prompt
+                retry_user += "\n\nCRITICAL: You MUST output a non-empty unified diff. Start with --- or @@."
         else:
             retry_sys = PROPOSE_SYSTEM_PROMPT
             retry_user = EMPTY_DIFF_RETRY_PROMPT.format(
