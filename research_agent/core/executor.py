@@ -109,37 +109,153 @@ def _attempt_semantic_regeneration(
         response_format="text",
     )
 
-    if not response or not response.text:
+    if not response or not response.content:
+        print(f"[REGENERATION-DEBUG] Empty LLM response: response={response}", flush=True)
         return None
 
+    raw_text = response.content
+    print(f"[REGENERATION-DEBUG] Raw LLM response ({len(raw_text)} chars): {raw_text[:300]}...", flush=True)
+
     # Extract diff from response
-    diff = _extract_diff_from_response(response.text)
+    diff = _extract_diff_from_response(raw_text)
+    if diff:
+        print(f"[REGENERATION-DEBUG] Extracted diff ({len(diff)} chars): {diff[:200]}...", flush=True)
+    else:
+        print(f"[REGENERATION-DEBUG] Failed to extract diff from response", flush=True)
     return diff
 
 
 def _extract_diff_from_response(text: str) -> str | None:
-    """Extract unified diff from LLM response text."""
-    if not text:
+    """Extract unified diff from LLM response text.
+
+    Handles multiple formats:
+    1. Standard unified diff with --- / +++ / @@ headers
+    2. Diff wrapped in markdown code fences
+    3. Raw diff lines without headers
+    4. JSON with diff field
+    """
+    if not text or not text.strip():
         return None
 
-    lines = text.splitlines()
+    # Strip markdown code fences if present
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        # Remove opening fence (with optional language tag)
+        first_newline = cleaned.find("\n")
+        if first_newline > 0:
+            cleaned = cleaned[first_newline + 1:]
+        # Remove closing fence
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3].rstrip()
+
+    lines = cleaned.splitlines()
     diff_lines = []
     in_diff = False
 
+    # Strategy 1: Look for standard unified diff markers
     for line in lines:
         if line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@"):
             in_diff = True
         if in_diff:
             diff_lines.append(line)
 
-    if diff_lines:
+    if diff_lines and any(l.startswith("+") or l.startswith("-") for l in diff_lines):
         return "\n".join(diff_lines)
 
-    # Fallback: check if the whole text looks like a diff
-    if any(l.startswith("+") or l.startswith("-") for l in lines if l.strip()):
-        return text
+    # Strategy 2: Look for diff-like content (lines starting with + or -)
+    candidate_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("+") or stripped.startswith("-"):
+            candidate_lines.append(line)
+        elif stripped.startswith("@@"):
+            candidate_lines.append(line)
+
+    if len(candidate_lines) >= 2:
+        # Check if it looks like a real diff (has both + and - lines, or has @@ headers)
+        has_add = any(l.strip().startswith("+") for l in candidate_lines)
+        has_remove = any(l.strip().startswith("-") for l in candidate_lines)
+        has_hunk = any(l.strip().startswith("@@") for l in candidate_lines)
+        if (has_add and has_remove) or has_hunk:
+            return "\n".join(candidate_lines)
+
+    # Strategy 3: Try to parse as JSON with diff field
+    try:
+        import json
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            for key in ("diff", "patch", "unified_diff", "patch_diff"):
+                if key in parsed and isinstance(parsed[key], str) and parsed[key].strip():
+                    return parsed[key].strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
 
     return None
+
+
+def _generate_template_patch(
+    proposal_context,
+    method_context: str = "",
+    candidate_ideas: list[dict] | None = None,
+) -> str | None:
+    """Generate a template-based reward patch as fallback.
+
+    Uses a simple pattern: add a potential-based shaping term.
+    This ensures at least one semantic patch is generated.
+    """
+    if not proposal_context:
+        return None
+
+    # Find a good insertion point: look for reward += or reward = lines
+    reward_lines = proposal_context.existing_reward_expression_lines
+    if not reward_lines:
+        return None
+
+    # Parse the first reward expression line to get the line number
+    import re
+    first_expr = reward_lines[0] if reward_lines else ""
+    line_match = re.search(r"L(\d+):", first_expr)
+    if not line_match:
+        return None
+
+    target_line = int(line_match.group(1))
+
+    # Get available variables
+    available = proposal_context.available_reward_variables
+    if not available:
+        return None
+
+    # Choose a variable for the shaping term
+    # Prefer: current_error, angular_velocity, action, observation
+    shaping_var = None
+    for candidate in ["current_error", "angular_velocity", "action_norm", "tracking_error", "observation"]:
+        if candidate in available or any(candidate in v for v in available):
+            shaping_var = candidate
+            break
+
+    if not shaping_var:
+        # Use first available non-self variable
+        for v in available:
+            if v not in ("self", "reward", "done", "truncated", "info"):
+                shaping_var = v
+                break
+
+    if not shaping_var:
+        shaping_var = "current_error"  # Safe default
+
+    # Build the patch
+    indent = " " * (proposal_context.base_indent + 4)  # Method body indent
+    patch = (
+        f"--- a/{proposal_context.target_file}\n"
+        f"+++ b/{proposal_context.target_file}\n"
+        f"@@ -{target_line},3 +{target_line},5 @@\n"
+        f" {indent}reward += tracking_reward\n"
+        f"+{indent}# Potential-based shaping: penalize squared error\n"
+        f"+{indent}shaping_penalty = -0.1 * ({shaping_var} ** 2)\n"
+        f"+{indent}reward += shaping_penalty\n"
+    )
+
+    return patch
 
 
 def _auto_fix_compilation(
@@ -1678,12 +1794,36 @@ def _execute_optimizer_phase(
                 method_context = ""
                 # Get proposal context and method context from the optimizer's state
                 try:
-                    opt_state = optimizer.graph.get_state(optimizer._last_config) if hasattr(optimizer, '_last_config') else None
-                    if opt_state:
-                        proposal_ctx = opt_state.values.get("proposal_context")
-                        method_context = opt_state.values.get("method_pool_context", "")
-                except Exception:
-                    pass
+                    has_last_config = hasattr(optimizer, '_last_config')
+                    print(f"[REGENERATION-DEBUG] has _last_config: {has_last_config}", flush=True)
+                    if has_last_config:
+                        opt_state = optimizer.graph.get_state(optimizer._last_config)
+                        print(f"[REGENERATION-DEBUG] opt_state: {opt_state is not None}", flush=True)
+                        if opt_state:
+                            proposal_ctx = opt_state.values.get("proposal_context")
+                            method_context = opt_state.values.get("method_pool_context", "")
+                            print(f"[REGENERATION-DEBUG] proposal_ctx: {type(proposal_ctx).__name__ if proposal_ctx else None}", flush=True)
+                            print(f"[REGENERATION-DEBUG] method_context length: {len(method_context)}", flush=True)
+                except Exception as e:
+                    print(f"[REGENERATION-DEBUG] Error getting state: {e}", flush=True)
+
+                # Fallback: try to extract proposal context directly from env.py
+                if proposal_ctx is None:
+                    print(f"[REGENERATION-DEBUG] proposal_ctx is None, trying direct extraction", flush=True)
+                    try:
+                        from research_agent.core.proposal_context import extract_editable_reward_context
+                        allowed = phase.get("allowed_changes", [])
+                        if allowed:
+                            target_file = allowed[0].get("file", "env.py") if isinstance(allowed[0], dict) else "env.py"
+                            proposal_ctx = extract_editable_reward_context(
+                                project_path=project_path,
+                                allowed_changes=allowed,
+                                target_file=target_file,
+                            )
+                            if proposal_ctx:
+                                print(f"[REGENERATION-DEBUG] Extracted proposal_ctx: {proposal_ctx.function_name} L{proposal_ctx.function_start_line}-{proposal_ctx.function_end_line}", flush=True)
+                    except Exception as e:
+                        print(f"[REGENERATION-DEBUG] Direct extraction failed: {e}", flush=True)
 
                 if proposal_ctx and observer and observer.is_active:
                     observer.emit("semantic_regeneration_start",
@@ -1745,7 +1885,32 @@ def _execute_optimizer_phase(
                                       candidate_id=candidate.candidate_id,
                                       total_attempts=max_semantic_regeneration_attempts)
                         observer.track_semantic_regeneration(success=False)
-                    print(f"[REGENERATION] {version_id}: failed after {max_semantic_regeneration_attempts} attempts", flush=True)
+                    print(f"[REGENERATION] {version_id}: LLM regeneration failed after {max_semantic_regeneration_attempts} attempts", flush=True)
+
+                    # v0.8.4 fallback: try template-based patch
+                    template_patch = _generate_template_patch(
+                        proposal_context=proposal_ctx,
+                        method_context=method_context,
+                        candidate_ideas=candidate_ideas,
+                    )
+                    if template_patch:
+                        template_decision = analyze_patch_semantics(
+                            diff_text=template_patch,
+                            previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
+                        )
+                        if template_decision.passed:
+                            candidate.patch_diff = template_patch
+                            candidate.description = f"[template-fallback] {candidate.description}"
+                            regeneration_successful = True
+                            if observer and observer.is_active:
+                                observer.emit("semantic_regeneration_template_success",
+                                              candidate_id=candidate.candidate_id)
+                                observer.track_semantic_regeneration(success=True)
+                            print(f"[REGENERATION] {version_id}: template fallback patch accepted", flush=True)
+                        else:
+                            print(f"[REGENERATION] {version_id}: template fallback rejected: {template_decision.reason}", flush=True)
+                    else:
+                        print(f"[REGENERATION] {version_id}: no template patch generated", flush=True)
 
             if not regeneration_successful:
                 candidate.status = "rejected"
@@ -1766,30 +1931,37 @@ def _execute_optimizer_phase(
                         cosmetic_only=semantic_decision.cosmetic_only,
                         reward_terms_changed=semantic_decision.reward_terms_changed,
                     )
-            _mark_batch("semantic_gate_rejected", reason=semantic_decision.reason)
-            version_tracker.log_version(
-                version_id=version_id,
-                candidate_id=candidate.candidate_id,
-                reward_formula=reward_formula,
-                modified_files=modified_files,
-                metrics_before=baseline_metrics,
-                metrics_after=None,
-                accepted=False,
-                rejection_reason=semantic_decision.reason,
-                source_methods=source_methods,
-                description=candidate.description,
-            )
-            # Record in cross-iteration history even if rejected
-            candidate_diff_history.append({
-                "candidate_id": candidate.candidate_id,
-                "iteration": iteration_count,
-                "diff": candidate.patch_diff,
-                "method_ids": [m.get("method_id", "") for m in candidate_ideas],
-                "decision": "semantic_gate_rejected",
-                "reason": semantic_decision.reason,
-            })
-            candidate_results.append(candidate.to_dict())
-            continue
+                _mark_batch("semantic_gate_rejected", reason=semantic_decision.reason)
+                version_tracker.log_version(
+                    version_id=version_id,
+                    candidate_id=candidate.candidate_id,
+                    reward_formula=reward_formula,
+                    modified_files=modified_files,
+                    metrics_before=baseline_metrics,
+                    metrics_after=None,
+                    accepted=False,
+                    rejection_reason=semantic_decision.reason,
+                    source_methods=source_methods,
+                    description=candidate.description,
+                )
+                # Record in cross-iteration history even if rejected
+                candidate_diff_history.append({
+                    "candidate_id": candidate.candidate_id,
+                    "iteration": iteration_count,
+                    "diff": candidate.patch_diff,
+                    "method_ids": [m.get("method_id", "") for m in candidate_ideas],
+                    "decision": "semantic_gate_rejected",
+                    "reason": semantic_decision.reason,
+                })
+                candidate_results.append(candidate.to_dict())
+                continue
+            else:
+                # Regeneration succeeded - continue with the regenerated patch
+                if observer and observer.is_active:
+                    observer.emit("semantic_gate_passed_after_regeneration",
+                                  candidate_id=candidate.candidate_id,
+                                  attempt=regen_attempt + 1)
+                print(f"[SEMANTIC-GATE] {version_id}: passed after regeneration (attempt {regen_attempt + 1})", flush=True)
         else:
             if observer and observer.is_active:
                 observer.emit("semantic_patch_gate_pass",

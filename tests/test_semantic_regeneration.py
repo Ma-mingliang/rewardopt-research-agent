@@ -139,7 +139,7 @@ class TestAttemptSemanticRegeneration:
 
     def test_successful_regeneration(self):
         mock_response = SimpleNamespace(
-            text=(
+            content=(
                 "--- a/env.py\n"
                 "+++ b/env.py\n"
                 "@@ -954,4 +954,6 @@\n"
@@ -164,7 +164,7 @@ class TestAttemptSemanticRegeneration:
 
     def test_empty_llm_response(self):
         mock_llm = MagicMock()
-        mock_llm.call.return_value = SimpleNamespace(text="")
+        mock_llm.call.return_value = SimpleNamespace(content="")
         optimizer = SimpleNamespace(llm_client=mock_llm)
 
         result = _attempt_semantic_regeneration(
@@ -175,7 +175,7 @@ class TestAttemptSemanticRegeneration:
 
     def test_llm_returns_no_diff(self):
         mock_llm = MagicMock()
-        mock_llm.call.return_value = SimpleNamespace(text="I cannot generate a valid patch.")
+        mock_llm.call.return_value = SimpleNamespace(content="I cannot generate a valid patch.")
         optimizer = SimpleNamespace(llm_client=mock_llm)
 
         result = _attempt_semantic_regeneration(
@@ -187,7 +187,7 @@ class TestAttemptSemanticRegeneration:
     def test_regeneration_returns_valid_diff(self):
         """Verify regeneration produces a parseable diff (tracking is done by caller)."""
         mock_response = SimpleNamespace(
-            text=(
+            content=(
                 "--- a/env.py\n"
                 "+++ b/env.py\n"
                 "@@ -954,4 +954,6 @@\n"
