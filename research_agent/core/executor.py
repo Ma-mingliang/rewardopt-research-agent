@@ -481,6 +481,74 @@ def _attempt_syntax_aware_repair(
     return diff
 
 
+def _write_candidate_bank_record(
+    bank_path: Path,
+    candidate,
+    iteration: int,
+    candidate_ideas: list[dict],
+    semantic_decision,
+    syntax_valid: bool,
+    validation_passed: bool,
+    proposal_source: str,
+    duplicate_similarity_max: float = 0.0,
+) -> None:
+    """Append a validated candidate record to candidate_bank.jsonl."""
+    import hashlib
+    import json as _json
+
+    # Extract method info
+    method_ids = [m.get("method_id", "") for m in (candidate_ideas or [])]
+    method_categories = list(set(m.get("method_category", "") for m in (candidate_ideas or []) if m.get("method_category")))
+
+    # Determine selected template from ideas
+    selected_templates = [m.get("template_id", m.get("method_id", "")) for m in (candidate_ideas or [])[:1]]
+
+    # Extract available variables used (from description or ideas)
+    available_vars_used = []
+    for idea in (candidate_ideas or []):
+        if isinstance(idea, dict):
+            vars_list = idea.get("available_variables_used", [])
+            if vars_list:
+                available_vars_used.extend(vars_list)
+    available_vars_used = list(set(available_vars_used))
+
+    # Diff hash
+    diff_text = candidate.patch_diff or ""
+    diff_hash = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()[:16] if diff_text else ""
+    diff_preview = diff_text[:300] if diff_text else ""
+
+    # Reward terms from semantic decision
+    reward_terms_added = list(semantic_decision.reward_terms_added) if semantic_decision and hasattr(semantic_decision, "reward_terms_added") else []
+    reward_terms_modified = list(semantic_decision.reward_terms_removed) if semantic_decision and hasattr(semantic_decision, "reward_terms_removed") else []
+
+    record = {
+        "candidate_id": candidate.candidate_id,
+        "iteration": iteration,
+        "method_ids": method_ids,
+        "method_categories": method_categories,
+        "selected_template": selected_templates[0] if selected_templates else "",
+        "available_reward_variables_used": available_vars_used,
+        "diff_hash": diff_hash,
+        "diff_preview": diff_preview,
+        "reward_terms_added": reward_terms_added,
+        "reward_terms_modified": reward_terms_modified,
+        "semantic_gate_decision": "passed" if (semantic_decision and semantic_decision.passed) else "rejected",
+        "syntax_valid": syntax_valid,
+        "validation_passed": validation_passed,
+        "rejection_reason": "" if validation_passed else (semantic_decision.reason if semantic_decision else ""),
+        "duplicate_similarity_max": round(duplicate_similarity_max, 4),
+        "proposal_source": proposal_source,
+        "train_called": False,
+        "full_eval_called": False,
+    }
+
+    try:
+        with open(bank_path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[CANDIDATE-BANK] Failed to write record: {e}", flush=True)
+
+
 def _auto_fix_compilation(
     file_path: Path,
     optimizer,
@@ -1842,6 +1910,9 @@ def _execute_optimizer_phase(
     candidate_results = []
     candidate_diff_history: list[dict] = []  # v0.8.2: cross-iteration tracking
 
+    # v0.8.5: Candidate bank output
+    candidate_bank_path = project_path / ".research-agent" / "candidate_bank.jsonl"
+
     # Checkpoint base directory
     checkpoint_base = project_path / "model" / "checkpoints"
 
@@ -2094,6 +2165,7 @@ def _execute_optimizer_phase(
                                 # Full success: semantic + syntax valid
                                 candidate.patch_diff = new_diff
                                 candidate.description = f"[regenerated] {candidate.description}"
+                                semantic_decision = new_decision
                                 regeneration_successful = True
                                 if observer and observer.is_active:
                                     observer.emit("semantic_regeneration_success",
@@ -2138,6 +2210,7 @@ def _execute_optimizer_phase(
                                             if rep_decision.passed:
                                                 candidate.patch_diff = repaired_diff
                                                 candidate.description = f"[syntax-repaired] {candidate.description}"
+                                                semantic_decision = rep_decision
                                                 regeneration_successful = True
                                                 if observer and observer.is_active:
                                                     observer.emit("semantic_regeneration_success",
@@ -2199,6 +2272,7 @@ def _execute_optimizer_phase(
                             if template_decision.passed:
                                 candidate.patch_diff = template_patch
                                 candidate.description = f"[template-fallback] {candidate.description}"
+                                semantic_decision = template_decision
                                 regeneration_successful = True
                                 if observer and observer.is_active:
                                     observer.emit("semantic_regeneration_template_success",
@@ -2572,6 +2646,29 @@ def _execute_optimizer_phase(
                 observer.emit("candidate_proposal_only_validated",
                               candidate_id=candidate.candidate_id)
             print(f"[PROPOSAL-ONLY] {version_id}: validated, skipping train/eval", flush=True)
+
+            # v0.8.5: Write candidate bank record
+            desc = candidate.description or ""
+            if "[syntax-repaired]" in desc:
+                proposal_source = "syntax_repair"
+            elif "[template-fallback]" in desc:
+                proposal_source = "template_fallback"
+            elif "[regenerated]" in desc:
+                proposal_source = "semantic_regeneration"
+            else:
+                proposal_source = "primary"
+            _write_candidate_bank_record(
+                bank_path=candidate_bank_path,
+                candidate=candidate,
+                iteration=iteration_count,
+                candidate_ideas=candidate_ideas,
+                semantic_decision=semantic_decision,
+                syntax_valid=True,
+                validation_passed=True,
+                proposal_source=proposal_source,
+                duplicate_similarity_max=0.0,
+            )
+
             candidate_results.append(candidate.to_dict())
             try:
                 patch_manager.rollback_patch(candidate)
