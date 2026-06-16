@@ -1,0 +1,119 @@
+# Reward Patch Few-Shot Examples
+# v0.8.4: Used to guide LLM toward semantic reward modifications
+# Each example shows a VALID patch that modifies reward computation logic.
+
+examples:
+  - id: pbrs_potential_shaping
+    method_category: A_potential_based_reward
+    intent: Add potential-based reward shaping using existing state variables
+    description: |
+      Adds a potential shaping term using existing `current_error` variable.
+      The potential difference guides the agent toward lower-error states.
+    available_variables_used:
+      - current_error
+      - gamma
+    before_snippet: |
+      tracking_reward = -error_weight * min(current_error**2, max_penalty)
+    after_snippet: |
+      tracking_reward = -error_weight * min(current_error**2, max_penalty)
+          # PBRS: potential shaping using error-based potential
+          gamma_phi = 0.99
+          potential_now = -current_error ** 2
+          potential_shaping = gamma_phi * potential_now
+          tracking_reward += 0.1 * potential_shaping
+    diff: |
+      @@ -948,2 +948,7 @@
+           tracking_reward = -error_weight * min(current_error**2, max_penalty)
+      +    # PBRS: potential shaping using error-based potential
+      +    gamma_phi = 0.99
+      +    potential_now = -current_error ** 2
+      +    potential_shaping = gamma_phi * potential_now
+      +    tracking_reward += 0.1 * potential_shaping
+    why_semantic: Adds a new reward term (potential_shaping) that modifies tracking_reward via +=. Uses existing variable current_error.
+    forbidden_cosmetic: Adding a blank line after tracking_reward assignment.
+    required_changed_terms:
+      - tracking_reward
+
+  - id: tracking_error_penalty
+    method_category: B_safety_constraint_reward
+    intent: Add a capped tracking error penalty using existing error variable
+    description: |
+      Adds a weighted penalty on tracking error with clipping to prevent extreme values.
+    available_variables_used:
+      - current_error
+    before_snippet: |
+      smoothness_penalty = -0.05 * angular_velocity
+    after_snippet: |
+      smoothness_penalty = -0.05 * angular_velocity
+          # Tracking error penalty with clipping
+          w_track = 0.3
+          error_cap = 0.5
+          tracking_penalty = -w_track * min(abs(current_error), error_cap)
+    diff: |
+      @@ -960,2 +960,6 @@
+           smoothness_penalty = -0.05 * angular_velocity
+      +    # Tracking error penalty with clipping
+      +    w_track = 0.3
+      +    error_cap = 0.5
+      +    tracking_penalty = -w_track * min(abs(current_error), error_cap)
+    why_semantic: Adds a new penalty term (tracking_penalty) using existing variable current_error. Modifies reward computation structure.
+    forbidden_cosmetic: Changing the coefficient 0.05 to 0.06 without adding a new term.
+    required_changed_terms:
+      - tracking_penalty
+
+  - id: control_energy_penalty
+    method_category: E_hierarchical_reward
+    intent: Add control energy penalty using existing action variable
+    description: |
+      Penalizes large control actions to encourage energy-efficient behavior.
+    available_variables_used:
+      - target_handle_angle
+    before_snippet: |
+      action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+    after_snippet: |
+      action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+          # Control energy penalty: quadratic cost on action magnitude
+          w_ctrl = 0.01
+          control_energy = -w_ctrl * target_handle_angle ** 2
+    diff: |
+      @@ -971,2 +971,5 @@
+           action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+      +    # Control energy penalty: quadratic cost on action magnitude
+      +    w_ctrl = 0.01
+      +    control_energy = -w_ctrl * target_handle_angle ** 2
+    why_semantic: Adds a new penalty term (control_energy) using existing variable target_handle_angle. Different structure from action_penalty (quadratic vs linear).
+    forbidden_cosmetic: Changing -0.02 to -0.03.
+    required_changed_terms:
+      - control_energy
+
+  - id: stability_fall_penalty
+    method_category: B_safety_constraint_reward
+    intent: Add stability/fall penalty using existing done condition
+    description: |
+      Adds a terminal penalty when the agent falls or reaches an unsafe state.
+      Uses the `done` signal that is available in the environment.
+    available_variables_used:
+      - current_error
+      - angular_velocity
+    before_snippet: |
+      reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + residual_penalty + subgoal_reward
+    after_snippet: |
+      # Stability penalty: large penalty for near-fall conditions
+          stability_penalty = 0.0
+          if angular_velocity > 2.0 or current_error > 0.5:
+              stability_penalty = -5.0
+          reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + residual_penalty + subgoal_reward + stability_penalty
+    diff: |
+      @@ -995,2 +995,6 @@
+      +    # Stability penalty: large penalty for near-fall conditions
+      +    stability_penalty = 0.0
+      +    if angular_velocity > 2.0 or current_error > 0.5:
+      +        stability_penalty = -5.0
+      +
+           reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + residual_penalty + subgoal_reward
+      +    reward += stability_penalty
+    why_semantic: Adds a new penalty term (stability_penalty) with conditional logic using existing variables. Modifies the final reward accumulation.
+    forbidden_cosmetic: Adding a comment "# stability" without actual penalty computation.
+    required_changed_terms:
+      - stability_penalty
+      - reward

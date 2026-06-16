@@ -30,6 +30,8 @@ class ProposalContext:
     allowed_line_ranges: list[tuple[int, int]] = field(default_factory=list)
     forbidden_summary: str = ""
     existing_reward_terms: list[str] = field(default_factory=list)
+    available_reward_variables: list[str] = field(default_factory=list)
+    existing_reward_expression_lines: list[str] = field(default_factory=list)
     anchor_lines_before: str = ""
     anchor_lines_after: str = ""
     total_file_lines: int = 0
@@ -195,6 +197,76 @@ def extract_existing_reward_terms(source_text: str, function_name: str) -> list[
     return sorted(terms)
 
 
+def extract_available_reward_variables(source_text: str, function_name: str) -> list[str]:
+    """Extract all variables available inside the reward function.
+
+    Includes: parameters, local assignments, and commonly available RL variables.
+    """
+    bounds = detect_reward_function_bounds(source_text, function_name)
+    if not bounds:
+        return []
+
+    _, start, end, _, _ = bounds
+    lines = source_text.splitlines()
+    func_lines = lines[start - 1 : end]
+
+    variables = set()
+
+    # Extract function parameters from def line
+    def_line = func_lines[0] if func_lines else ""
+    param_match = re.search(r"\(([^)]*)\)", def_line)
+    if param_match:
+        params = param_match.group(1)
+        for param in re.findall(r"(\w+)", params):
+            if param not in ("self", "cls"):
+                variables.add(param)
+
+    # Extract local variable assignments
+    for line in func_lines:
+        # Match: variable = expression
+        match = re.match(r"\s+(\w+)\s*=", line)
+        if match:
+            name = match.group(1)
+            # Skip private/dunder variables
+            if not name.startswith("__") and not name.startswith("_"):
+                variables.add(name)
+
+    # Common RL environment variables that may be available
+    common_vars = [
+        "reward", "done", "truncated", "info",
+        "observation", "action", "state", "next_state",
+    ]
+    variables.update(common_vars)
+
+    return sorted(variables)
+
+
+def extract_reward_expression_lines(source_text: str, function_name: str) -> list[str]:
+    """Extract lines that contain reward accumulation expressions.
+
+    Matches lines like: reward += X, reward = X, reward -= X
+    """
+    bounds = detect_reward_function_bounds(source_text, function_name)
+    if not bounds:
+        return []
+
+    _, start, end, _, _ = bounds
+    lines = source_text.splitlines()
+    func_lines = lines[start - 1 : end]
+
+    reward_expr_lines = []
+    for i, line in enumerate(func_lines):
+        stripped = line.strip()
+        # Match reward accumulation/assignment patterns
+        if re.match(r"reward\s*[\+\-\*]?=", stripped):
+            reward_expr_lines.append(f"  L{start + i}: {stripped}")
+        # Match penalty/bonus/tracking terms that feed into reward
+        elif re.match(r"(tracking_reward|bonus_reward|smoothness_penalty|improvement_reward|action_penalty|residual_penalty|subgoal_reward|stability_penalty)\s*[\+\-\*]?=", stripped):
+            reward_expr_lines.append(f"  L{start + i}: {stripped}")
+
+    return reward_expr_lines
+
+
 def extract_editable_reward_context(
     project_path: Path,
     allowed_changes: list[str] | list[dict],
@@ -248,6 +320,12 @@ def extract_editable_reward_context(
     # Existing reward terms
     existing_terms = extract_existing_reward_terms(source_text, func_name)
 
+    # Available reward variables
+    available_vars = extract_available_reward_variables(source_text, func_name)
+
+    # Reward expression lines
+    reward_expr_lines = extract_reward_expression_lines(source_text, func_name)
+
     # Anchor lines (3 lines before and after function)
     anchor_before_lines = lines[max(0, start_line - 4) : start_line - 1]
     anchor_after_lines = lines[end_line : min(len(lines), end_line + 3)]
@@ -269,6 +347,8 @@ def extract_editable_reward_context(
         allowed_line_ranges=allowed_ranges,
         forbidden_summary=forbidden_summary,
         existing_reward_terms=existing_terms,
+        available_reward_variables=available_vars,
+        existing_reward_expression_lines=reward_expr_lines,
         anchor_lines_before=anchor_before,
         anchor_lines_after=anchor_after,
         total_file_lines=len(lines),

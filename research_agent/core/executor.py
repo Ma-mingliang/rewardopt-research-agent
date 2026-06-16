@@ -29,6 +29,119 @@ from research_agent.core.semantic_patch_gate import (
 from research_agent.core.system_preflight import run_system_preflight
 
 
+def _attempt_semantic_regeneration(
+    optimizer,
+    candidate,
+    semantic_decision: SemanticPatchDecision,
+    proposal_context,
+    state: dict,
+    method_context: str,
+    candidate_ideas: list[dict],
+    observer=None,
+) -> str | None:
+    """Attempt to regenerate a semantic patch after gate rejection.
+
+    Returns new diff string if successful, None if failed.
+    """
+    from research_agent.agents.reward_agent.prompts import (
+        SEMANTIC_REGENERATION_PROMPT,
+        SEMANTIC_REGENERATION_SYSTEM_PROMPT,
+        load_few_shot_examples,
+    )
+    from research_agent.core.proposal_context import ProposalContext
+
+    llm = getattr(optimizer, "llm_client", None)
+    if llm is None:
+        return None
+
+    if not proposal_context or not isinstance(proposal_context, ProposalContext):
+        return None
+
+    # Build diversity context
+    prev_diffs = state.get("previous_candidate_diffs", [])
+    prev_methods = state.get("previous_method_ids", [])
+    diversity_parts = []
+    if prev_methods:
+        diversity_parts.append(f"Previously tried method IDs: {', '.join(set(prev_methods))}")
+    if prev_diffs:
+        diversity_parts.append(f"Previous candidates produced {len(prev_diffs)} patch(es).")
+    diversity_context = "\n".join(diversity_parts) if diversity_parts else "(No previous candidates)"
+
+    # Build available variables
+    available_vars = ", ".join(proposal_context.available_reward_variables) if proposal_context.available_reward_variables else "(none detected)"
+    existing_terms = ", ".join(proposal_context.existing_reward_terms) if proposal_context.existing_reward_terms else "(none detected)"
+    reward_expr_lines = "\n".join(proposal_context.existing_reward_expression_lines) if proposal_context.existing_reward_expression_lines else "(none detected)"
+
+    # Format ideas
+    ideas_str = ""
+    for idea in (candidate_ideas or [])[:3]:
+        if isinstance(idea, dict):
+            ideas_str += f"- {idea.get('title', idea.get('method_id', 'unknown'))}: {idea.get('description', '')[:200]}\n"
+        else:
+            ideas_str += f"- {idea}\n"
+    if not ideas_str:
+        ideas_str = "(no ideas)"
+
+    few_shot_examples = load_few_shot_examples()
+
+    user_prompt = SEMANTIC_REGENERATION_PROMPT.format(
+        function_name=proposal_context.function_name,
+        target_file=proposal_context.target_file,
+        class_name=proposal_context.class_name or "(top-level)",
+        function_start_line=proposal_context.function_start_line,
+        function_end_line=proposal_context.function_end_line,
+        line_numbered_context=proposal_context.line_numbered_context,
+        available_reward_variables=available_vars,
+        existing_reward_terms=existing_terms,
+        existing_reward_expression_lines=reward_expr_lines,
+        rejection_reason=semantic_decision.reason,
+        previous_diff=candidate.patch_diff[:500] if candidate.patch_diff else "(empty)",
+        ideas=ideas_str,
+        method_context=method_context or "(none)",
+        diversity_context=diversity_context,
+        few_shot_examples=few_shot_examples,
+    )
+
+    response = llm.call(
+        system_prompt=SEMANTIC_REGENERATION_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        max_tokens=4096,
+        response_format="text",
+    )
+
+    if not response or not response.text:
+        return None
+
+    # Extract diff from response
+    diff = _extract_diff_from_response(response.text)
+    return diff
+
+
+def _extract_diff_from_response(text: str) -> str | None:
+    """Extract unified diff from LLM response text."""
+    if not text:
+        return None
+
+    lines = text.splitlines()
+    diff_lines = []
+    in_diff = False
+
+    for line in lines:
+        if line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@"):
+            in_diff = True
+        if in_diff:
+            diff_lines.append(line)
+
+    if diff_lines:
+        return "\n".join(diff_lines)
+
+    # Fallback: check if the whole text looks like a diff
+    if any(l.startswith("+") or l.startswith("-") for l in lines if l.strip()):
+        return text
+
+    return None
+
+
 def _auto_fix_compilation(
     file_path: Path,
     optimizer,
@@ -1216,6 +1329,7 @@ def _execute_optimizer_phase(
     execution_python: str | None = None,
     observer=None,
     proposal_only: bool = False,
+    max_semantic_regeneration_attempts: int = 2,
 ) -> dict:
     """Execute an optimizer phase with full propose→apply→eval→accept→rollback cycle.
 
@@ -1557,24 +1671,101 @@ def _execute_optimizer_phase(
             previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
         )
         if not semantic_decision.passed:
-            candidate.status = "rejected"
-            candidate.rejection_reason = semantic_decision.reason
-            optimizer._log_candidate(candidate)
-            if observer and observer.is_active:
-                observer.emit("semantic_patch_gate_reject",
-                              candidate_id=candidate.candidate_id,
-                              reason=semantic_decision.reason,
-                              semantic_change_detected=semantic_decision.semantic_change_detected,
-                              cosmetic_only=semantic_decision.cosmetic_only,
-                              reward_terms_changed=semantic_decision.reward_terms_changed,
-                              changed_line_count=semantic_decision.changed_line_count)
-                observer.track_candidate("rejected", rejection_reason=semantic_decision.reason)
-                observer.track_semantic_gate(
-                    passed=False,
-                    reason=semantic_decision.reason,
-                    cosmetic_only=semantic_decision.cosmetic_only,
-                    reward_terms_changed=semantic_decision.reward_terms_changed,
-                )
+            # v0.8.4: Attempt semantic regeneration before rejecting
+            regeneration_successful = False
+            if max_semantic_regeneration_attempts > 0:
+                proposal_ctx = None
+                method_context = ""
+                # Get proposal context and method context from the optimizer's state
+                try:
+                    opt_state = optimizer.graph.get_state(optimizer._last_config) if hasattr(optimizer, '_last_config') else None
+                    if opt_state:
+                        proposal_ctx = opt_state.values.get("proposal_context")
+                        method_context = opt_state.values.get("method_pool_context", "")
+                except Exception:
+                    pass
+
+                if proposal_ctx and observer and observer.is_active:
+                    observer.emit("semantic_regeneration_start",
+                                  candidate_id=candidate.candidate_id,
+                                  rejection_reason=semantic_decision.reason,
+                                  max_attempts=max_semantic_regeneration_attempts)
+
+                for regen_attempt in range(max_semantic_regeneration_attempts):
+                    if observer and observer.is_active:
+                        observer.emit("semantic_regeneration_attempt",
+                                      candidate_id=candidate.candidate_id,
+                                      attempt=regen_attempt + 1)
+
+                    new_diff = _attempt_semantic_regeneration(
+                        optimizer=optimizer,
+                        candidate=candidate,
+                        semantic_decision=semantic_decision,
+                        proposal_context=proposal_ctx,
+                        state={},
+                        method_context=method_context,
+                        candidate_ideas=candidate_ideas,
+                        observer=observer,
+                    )
+
+                    if new_diff and new_diff.strip():
+                        # Re-run semantic gate on regenerated diff
+                        new_decision = analyze_patch_semantics(
+                            diff_text=new_diff,
+                            previous_diffs=prev_diffs_for_gate if prev_diffs_for_gate else None,
+                        )
+                        if new_decision.passed:
+                            # Regeneration successful!
+                            candidate.patch_diff = new_diff
+                            candidate.description = f"[regenerated] {candidate.description}"
+                            regeneration_successful = True
+                            if observer and observer.is_active:
+                                observer.emit("semantic_regeneration_success",
+                                              candidate_id=candidate.candidate_id,
+                                              attempt=regen_attempt + 1)
+                                observer.track_semantic_regeneration(success=True)
+                            print(f"[REGENERATION] {version_id}: semantic patch generated on attempt {regen_attempt + 1}", flush=True)
+                            break
+                        else:
+                            if observer and observer.is_active:
+                                observer.emit("semantic_regeneration_attempt_failed",
+                                              candidate_id=candidate.candidate_id,
+                                              attempt=regen_attempt + 1,
+                                              reason=new_decision.reason)
+                    else:
+                        if observer and observer.is_active:
+                            observer.emit("semantic_regeneration_attempt_failed",
+                                          candidate_id=candidate.candidate_id,
+                                          attempt=regen_attempt + 1,
+                                          reason="empty_response")
+
+                if not regeneration_successful:
+                    if observer and observer.is_active:
+                        observer.emit("semantic_regeneration_failed",
+                                      candidate_id=candidate.candidate_id,
+                                      total_attempts=max_semantic_regeneration_attempts)
+                        observer.track_semantic_regeneration(success=False)
+                    print(f"[REGENERATION] {version_id}: failed after {max_semantic_regeneration_attempts} attempts", flush=True)
+
+            if not regeneration_successful:
+                candidate.status = "rejected"
+                candidate.rejection_reason = semantic_decision.reason
+                optimizer._log_candidate(candidate)
+                if observer and observer.is_active:
+                    observer.emit("semantic_patch_gate_reject",
+                                  candidate_id=candidate.candidate_id,
+                                  reason=semantic_decision.reason,
+                                  semantic_change_detected=semantic_decision.semantic_change_detected,
+                                  cosmetic_only=semantic_decision.cosmetic_only,
+                                  reward_terms_changed=semantic_decision.reward_terms_changed,
+                                  changed_line_count=semantic_decision.changed_line_count)
+                    observer.track_candidate("rejected", rejection_reason=semantic_decision.reason)
+                    observer.track_semantic_gate(
+                        passed=False,
+                        reason=semantic_decision.reason,
+                        cosmetic_only=semantic_decision.cosmetic_only,
+                        reward_terms_changed=semantic_decision.reward_terms_changed,
+                    )
             _mark_batch("semantic_gate_rejected", reason=semantic_decision.reason)
             version_tracker.log_version(
                 version_id=version_id,

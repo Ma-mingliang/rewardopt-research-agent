@@ -151,6 +151,11 @@ class RunObserver:
         self._cross_iteration_duplicate_patch_count: int = 0
         self._cross_iteration_similarity_max: float = 0.0
 
+        # Semantic regeneration tracking (v0.8.4)
+        self._semantic_regeneration_attempts: int = 0
+        self._semantic_regeneration_successes: int = 0
+        self._semantic_regeneration_failures: int = 0
+
         # System preflight tracking (v0.8.2)
         self._system_preflight_enabled: bool = True
         self._system_preflight_passed: bool = True
@@ -416,6 +421,14 @@ class RunObserver:
         self._system_preflight_failure_type = failure_type
         self._torch_import_preflight_passed = torch_importable
 
+    def track_semantic_regeneration(self, success: bool) -> None:
+        """Track a semantic regeneration attempt after gate rejection."""
+        self._semantic_regeneration_attempts += 1
+        if success:
+            self._semantic_regeneration_successes += 1
+        else:
+            self._semantic_regeneration_failures += 1
+
     def write_summary(self, extra: dict[str, Any] | None = None) -> None:
         """Write summary.json."""
         ended_at = datetime.now(timezone.utc).isoformat()
@@ -525,6 +538,9 @@ class RunObserver:
             "system_preflight_passed": self._system_preflight_passed,
             "system_preflight_failure_type": self._system_preflight_failure_type,
             "torch_import_preflight_passed": self._torch_import_preflight_passed,
+            "semantic_regeneration_attempts": self._semantic_regeneration_attempts,
+            "semantic_regeneration_successes": self._semantic_regeneration_successes,
+            "semantic_regeneration_failures": self._semantic_regeneration_failures,
             "event_log": "events.jsonl",
         }
         if extra:

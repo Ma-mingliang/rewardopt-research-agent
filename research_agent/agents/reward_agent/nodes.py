@@ -26,6 +26,9 @@ from research_agent.agents.reward_agent.prompts import (
     PROPOSE_USER_PROMPT,
     SEMANTIC_FIX_PROMPT,
     SEMANTIC_FIX_SYSTEM_PROMPT,
+    SEMANTIC_REGENERATION_PROMPT,
+    SEMANTIC_REGENERATION_SYSTEM_PROMPT,
+    load_few_shot_examples,
 )
 from research_agent.core.proposal_context import (
     ProposalContext,
@@ -243,6 +246,15 @@ def _build_context_proposal_prompt(state: RewardAgentState) -> tuple[str, str] |
 
     existing_terms = ", ".join(proposal_ctx.existing_reward_terms) if proposal_ctx.existing_reward_terms else "(none detected)"
 
+    # v0.8.4: Available reward variables
+    available_vars = ", ".join(proposal_ctx.available_reward_variables) if proposal_ctx.available_reward_variables else "(none detected)"
+
+    # v0.8.4: Existing reward expression lines
+    reward_expr_lines = "\n".join(proposal_ctx.existing_reward_expression_lines) if proposal_ctx.existing_reward_expression_lines else "(none detected)"
+
+    # v0.8.4: Few-shot examples
+    few_shot_examples = load_few_shot_examples()
+
     # Build diversity context (v0.8)
     prev_diffs = state.get("previous_candidate_diffs", [])
     prev_methods = state.get("previous_method_ids", [])
@@ -272,13 +284,16 @@ def _build_context_proposal_prompt(state: RewardAgentState) -> tuple[str, str] |
         indent_style=proposal_ctx.indentation_style,
         base_indent=proposal_ctx.base_indent,
         line_numbered_context=proposal_ctx.line_numbered_context,
+        available_reward_variables=available_vars,
         existing_reward_terms=existing_terms,
+        existing_reward_expression_lines=reward_expr_lines,
         baseline=baseline_str,
         ideas=ideas_str,
         method_context=method_context,
         allowed=allowed,
         forbidden=proposal_ctx.forbidden_summary,
         diversity_context=diversity_context,
+        few_shot_examples=few_shot_examples,
     )
 
     return sys_prompt, user_prompt
@@ -409,12 +424,15 @@ def propose_node(state: RewardAgentState, config: RunnableConfig) -> dict:
                     function_start_line=getattr(proposal_context, "function_start_line", 0),
                     function_end_line=getattr(proposal_context, "function_end_line", 0),
                     line_numbered_context=getattr(proposal_context, "line_numbered_context", code),
+                    available_reward_variables=", ".join(getattr(proposal_context, "available_reward_variables", [])) or "(none)",
                     existing_reward_terms=getattr(proposal_context, "existing_reward_terms", ""),
+                    existing_reward_expression_lines="\n".join(getattr(proposal_context, "existing_reward_expression_lines", [])) or "(none)",
                     baseline=baseline_str,
                     ideas=ideas_str,
                     method_context=method_context,
                     diversity_context=diversity_context,
                     previous_diff=diff or "(empty)",
+                    few_shot_examples=load_few_shot_examples(),
                 )
             else:
                 retry_sys, retry_user = ctx_prompt

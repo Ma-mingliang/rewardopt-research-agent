@@ -39,6 +39,8 @@ from research_agent.core.version_tracker import VersionTracker
               help="Allow proceeding when env.py differs from manifest hash")
 @click.option("--proposal-only", is_flag=True, default=False,
               help="Run propose+validate only, skip training and eval")
+@click.option("--max-semantic-regeneration-attempts", default=2, type=int,
+              help="Max attempts to regenerate semantic patch after gate rejection (default: 2)")
 def main(
     project: str,
     max_iterations: int | None,
@@ -58,6 +60,7 @@ def main(
     baseline_manifest: str | None,
     accept_baseline_migration: bool,
     proposal_only: bool,
+    max_semantic_regeneration_attempts: int,
 ):
     """Run optimizer with version tracking.
 
@@ -331,6 +334,7 @@ def main(
                 execution_python=execution_python,
                 observer=observer,
                 proposal_only=proposal_only,
+                max_semantic_regeneration_attempts=max_semantic_regeneration_attempts,
             )
         except Exception as e:
             print(f"[ERROR] Iteration failed: {e}", flush=True)
