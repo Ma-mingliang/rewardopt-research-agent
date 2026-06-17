@@ -44,3 +44,6 @@ htmlcov/
 # Large files (papers)
 research_agent/reward_paper_pool/papers/
 HRRL2/
+
+# Paper pool archive (uploaded to GitHub Releases)
+*.zip

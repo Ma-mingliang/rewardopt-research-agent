@@ -110,6 +110,55 @@ research-agent 优化器通过以下方式使用 HRRL2：
 
 ---
 
+## 论文池下载（可选）
+
+research-agent 包含一个 reward shaping 论文池，用于方法模板生成。论文文件（435 PDF + 150 MD）不在 git 仓库中，需要从 GitHub Releases 下载。
+
+### 下载地址
+
+```
+https://github.com/Ma-mingliang/rewardopt-research-agent/releases
+```
+
+文件名: `reward_paper_pool_papers.zip`（约 814MB）
+
+### 解压方法
+
+```bash
+# 在 research-agent 项目根目录下解压
+cd research-agent
+unzip reward_paper_pool_papers.zip
+```
+
+Windows 用户：右键 → 解压到当前文件夹。
+
+解压后目录结构：
+
+```
+research_agent/reward_paper_pool/papers/
+├── all_sources/by_category/   # 全部来源 PDF（139 篇）
+├── arxiv/by_category/         # arxiv 来源 PDF（110 篇）
+└── md/by_category/            # markitdown 转换的 MD 文件（150 篇）
+```
+
+每个 `by_category/` 下按 8 个 reward 类别（A-H）组织。
+
+### 验证
+
+```bash
+# 确认 PDF 数量
+find research_agent/reward_paper_pool/papers -name "*.pdf" | wc -l
+# 预期: 435
+
+# 确认 MD 数量
+find research_agent/reward_paper_pool/papers/md -name "*.md" | wc -l
+# 预期: 150
+```
+
+> **注意**: 不下载论文池不影响 optimizer 运行。论文池主要用于研究参考和方法模板生成。
+
+---
+
 ## 前置条件
 
 | 条件 | 说明 |

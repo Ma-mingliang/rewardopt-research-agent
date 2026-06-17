@@ -718,3 +718,25 @@ v0.8.5/v0.8.6 报告中记录的 1 pre-existing Windows path failure 不属于 v
 | `run_optimizer.py` | CLI 入口 |
 | `docs/baselines/hrrl2_operational_baseline.yaml` | 基线 manifest |
 | `docs/artifacts/reward_langgraph_v0_8_9_candidate_handoff/` | 候选 handoff 工件 |
+| `research_agent/reward_paper_pool/` | 论文池（方法模板来源） |
+| `research_agent/reward_paper_pool/papers/` | 论文 PDF + MD（需从 GitHub Releases 下载） |
+
+---
+
+## 附录 C: 论文池下载
+
+论文池包含 435 篇 reward shaping 相关论文（PDF）和 150 篇 markitdown 转换的 markdown 文件。文件不在 git 仓库中，需从 GitHub Releases 下载。
+
+**下载地址**: `https://github.com/Ma-mingliang/rewardopt-research-agent/releases`
+
+**文件名**: `reward_paper_pool_papers.zip`（约 814MB）
+
+**解压方法**:
+```bash
+cd research-agent
+unzip reward_paper_pool_papers.zip
+```
+
+解压后路径: `research_agent/reward_paper_pool/papers/`
+
+详细说明见 `research_agent/reward_paper_pool/papers/README.md`。
