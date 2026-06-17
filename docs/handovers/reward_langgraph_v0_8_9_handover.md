@@ -27,6 +27,49 @@
 
 ---
 
+## 1.1 项目仓库地址
+
+### research-agent 平台
+
+| 项目 | 值 |
+|------|-----|
+| GitHub 地址 | `https://github.com/Ma-mingliang/rewardopt-research-agent.git` |
+| 主分支 | `main` |
+| 当前工作分支 | `reward-langgraph-v0.8.9-candidate-bank-handoff` |
+| 最终 tag | `reward-langgraph-v0.8.9` (commit `203f50c`) |
+
+### HRRL2 目标项目
+
+| 项目 | 值 |
+|------|-----|
+| GitHub 地址 | `https://github.com/Ma-mingliang/HRRL2-test.git` |
+| 测试副本 | `https://github.com/Ma-mingliang/HRRL2-test-test.git` |
+| 推荐分支 | `optimizer-run-v2` |
+| 其他分支 | `main`, `optimizer-run` |
+| 本地路径 | `research-agent/HRRL2/`（gitignored，需单独克隆） |
+
+### 获取 HRRL2
+
+```bash
+# 在 research-agent 根目录下
+git clone https://github.com/Ma-mingliang/HRRL2-test.git HRRL2
+cd HRRL2
+git checkout optimizer-run-v2
+```
+
+### HRRL2 在 optimizer 中的角色
+
+1. **读取** `HRRL2/env.py` 中的 `__calculate_reward` 方法作为优化目标
+2. **生成** reward patch（diff 格式）
+3. **应用** patch 到 env.py（临时修改）
+4. **训练** HRRL2（通过 `LQR.py` 或 `stanley.py`）
+5. **评估** 训练结果
+6. **回滚** patch（`git checkout -- env.py`）
+
+当前 v0.8.9 只执行步骤 1-3（proposal-only），不训练。
+
+---
+
 ## 2. 项目目标与边界
 
 ### reward_langgraph 的目标

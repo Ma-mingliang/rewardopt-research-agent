@@ -12,6 +12,102 @@
 
 ---
 
+## HRRL2 项目获取与配置
+
+HRRL2 是一个独立的 Git 仓库，被 research-agent 通过 `.gitignore` 排除在外。你需要单独克隆它。
+
+### GitHub 地址
+
+| 项目 | 地址 |
+|------|------|
+| HRRL2 主仓库 | `https://github.com/Ma-mingliang/HRRL2-test.git` |
+| HRRL2 测试副本 | `https://github.com/Ma-mingliang/HRRL2-test-test.git` |
+
+### 分支说明
+
+| 分支 | 用途 |
+|------|------|
+| `main` | 主分支 |
+| `optimizer-run` | 优化器运行分支 |
+| `optimizer-run-v2` | 当前使用的优化器运行分支（推荐） |
+
+### 获取 HRRL2
+
+```bash
+# 方式 1: 克隆到 research-agent 目录下（推荐）
+cd research-agent
+git clone https://github.com/Ma-mingliang/HRRL2-test.git HRRL2
+cd HRRL2
+git checkout optimizer-run-v2
+cd ..
+
+# 方式 2: 如果 HRRL2 目录已存在但为空
+cd HRRL2
+git status  # 确认是否有内容
+# 如无内容，重新克隆
+```
+
+### 确认 HRRL2 状态
+
+```bash
+# 确认关键文件存在
+ls HRRL2/env.py
+ls HRRL2/LQR.py
+ls HRRL2/stanley.py
+ls HRRL2/3D/
+
+# 确认 env.py baseline hash（必须为 e19703467be71e20）
+python -c "import hashlib; print(hashlib.sha256(open('HRRL2/env.py','rb').read()).hexdigest()[:16])"
+
+# 确认当前分支
+cd HRRL2 && git branch --show-current && cd ..
+```
+
+### 安装 HRRL2 依赖
+
+HRRL2 需要额外的 RL 依赖，不在 research-agent 的 `pyproject.toml` 中：
+
+```bash
+pip install gymnasium torch stable_baselines3 pybullet pybullet_data numpy pandas
+```
+
+### 验证 HRRL2 可用
+
+```bash
+cd HRRL2
+python verify_full_logic_smoke.py
+python verify_single_turn_assets.py
+cd ..
+```
+
+### HRRL2 关键文件
+
+| 文件 | 用途 |
+|------|------|
+| `env.py` | 环境定义，含 `__calculate_reward` 方法（优化目标） |
+| `LQR.py` | Part 1: LQR 平衡控制训练入口 |
+| `stanley.py` | Part 3: Stanley 路径跟踪训练入口 |
+| `3D/` | 路径 mesh、地形、车辆 URDF 资源 |
+| `model/` | 训练输出目录 |
+| `verify_full_logic_smoke.py` | 主线烟雾测试 |
+| `verify_single_turn_assets.py` | 路径资源加载检查 |
+| `README.md` | HRRL2 使用文档 |
+
+### HRRL2 在 optimizer 中的角色
+
+research-agent 优化器通过以下方式使用 HRRL2：
+
+1. **读取** `HRRL2/env.py` 中的 `__calculate_reward` 方法作为优化目标
+2. **生成** reward patch（diff 格式）
+3. **应用** patch 到 env.py（临时修改）
+4. **训练** HRRL2（通过 `LQR.py` 或 `stanley.py`）
+5. **评估** 训练结果
+6. **回滚** patch（`git checkout -- env.py`）
+
+当前 v0.8.9 只执行步骤 1-3（proposal-only），不训练。
+
+---
+
 ## 前置条件
 
 | 条件 | 说明 |
@@ -20,7 +116,7 @@
 | Git | 任意版本 |
 | Conda（推荐） | 或使用 venv |
 | LLM API Key | 仅路径 B/C 需要；路径 A 不需要 |
-| HRRL2 项目 | 已包含在仓库中（gitignored 子目录） |
+| HRRL2 项目 | 需要单独克隆（见上文） |
 | Execution Python | 路径 C 需要安装了 torch/gymnasium 的 Python（如 `E:/Anaconda/envs/RL2/python.exe`） |
 
 ---
