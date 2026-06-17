@@ -651,6 +651,79 @@ v0.8.5/v0.8.6 报告中记录的 1 pre-existing Windows path failure 不属于 v
 | v0.8.7 | `reward-langgraph-v0.8.7` | DiversityScheduler |
 | v0.8.8 | `reward-langgraph-v0.8.8` | diverse candidate bank refresh |
 | v0.8.9 | `reward-langgraph-v0.8.9` | candidate handoff artifacts |
+| v0.8.10 | `reward-langgraph-v0.8.10` | repair-first error recovery |
+
+---
+
+## v0.8.10 补丁：Repair-first error recovery
+
+### 背景
+
+v0.8.9 后续执行中，候选 `residual_control_c001` 被拒绝。
+
+### 原始拒绝
+
+- **报告路径**: `D:\rewardopt-research-agent\HRRL2\.research-agent\reports\rejection_analysis_report.md`
+- **rejection_reason**: `patch_repair_exhausted after 4 attempts`
+- **根本问题**: patch 调用了未定义的 helper 方法 `_compute_potential_reward()`
+
+### 根本原因
+
+1. 通用 patch repair 无法识别 missing helper / unresolved symbol
+2. 修复策略尝试 diff repair，但没有将 helper call 转换为 inline reward expression
+3. 4 次尝试全部使用语法修复策略，但真正问题是未定义符号
+
+### v0.8.10 修复
+
+新增模块：
+
+| 模块 | 作用 |
+|------|------|
+| `repair_classifier.py` | 错误分类器，将错误分为 11 种类型 |
+| `undefined_symbol_guard.py` | 检测未定义的 helper 方法调用 |
+| `missing_helper_repair.py` | 修复 missing helper（内联转换/方法定义） |
+
+新增修复策略：
+
+| 策略 | 用途 |
+|------|------|
+| `missing_helper_repair` | 修复未定义的 helper 方法 |
+| `inline_conversion` | 将 helper call 转换为内联表达式 |
+| `variable_grounded_regeneration` | 使用可用变量重新生成 |
+
+### residual_control_c001 最终结果
+
+| 项目 | 值 |
+|------|-----|
+| reproduced | yes |
+| fixed | yes |
+| repair method | `inline_conversion` |
+| validation_passed | yes |
+| patch_repair_exhausted avoided | yes |
+| train_called | false |
+| full_eval_called | false |
+| env.py hash | unchanged |
+
+### 修复示例
+
+```python
+# 修复前（undefined helper）
+reward = self._compute_stage3_reward() + self._compute_potential_reward()
+
+# 修复后（inline conversion）
+reward = self._compute_stage3_reward() + (-0.5 * abs(current_error))
+```
+
+### 新规则
+
+reward patches 不得调用未定义的 helper 方法。如果 helper 缺失，系统必须先尝试 `missing_helper_repair` 和 inline conversion。只有真正无法修复的情况才允许以具体原因拒绝。
+
+### v0.8.10 commit/tag
+
+- **commit**: `26d230c`
+- **tag**: `reward-langgraph-v0.8.10`
+
+---
 
 ## 附录 B: 关键文件路径速查
 
@@ -673,3 +746,7 @@ v0.8.5/v0.8.6 报告中记录的 1 pre-existing Windows path failure 不属于 v
 | `run_optimizer.py` | CLI 入口 |
 | `docs/baselines/hrrl2_operational_baseline.yaml` | 基线 manifest |
 | `docs/artifacts/reward_langgraph_v0_8_9_candidate_handoff/` | 候选 handoff 工件 |
+| `research_agent/core/repair_classifier.py` | 错误分类器 (v0.8.10) |
+| `research_agent/core/undefined_symbol_guard.py` | undefined symbol 检测 (v0.8.10) |
+| `research_agent/core/missing_helper_repair.py` | missing helper 修复 (v0.8.10) |
+| `tests/test_undefined_symbol_guard.py` | undefined symbol 回归测试 (v0.8.10) |
