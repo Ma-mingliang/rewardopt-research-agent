@@ -61,6 +61,11 @@ HARD RULES:
 - If adding numerical terms, guard divisions/log/sqrt with epsilon (e.g., x / (val + 1e-8)).
 - Keep the diff SMALL: 5-30 lines changed maximum.
 - Only output a unified diff. No markdown, no explanation, no JSON wrapper.
+- Do NOT call helper methods that are not already defined in the provided context.
+- Do NOT invent `_compute_*`, `_calculate_*`, `_get_*`, or `_reward_*` functions.
+- Prefer inline reward expressions using available variables.
+- If introducing a helper method, include the complete method definition in the same diff.
+- A patch calling an undefined helper is invalid.
 
 OUTPUT FORMAT — output ONLY this, nothing else:
 
@@ -285,6 +290,9 @@ You MUST generate a VALID semantic reward patch this time. A valid patch:
 - Adds, removes, or modifies a penalty, bonus, potential, shaping, or coefficient term
 - Uses ONLY variables from the Available Reward Variables list
 - Is NOT blank lines, comments, whitespace, or formatting
+- Does NOT call helper methods that are not already defined in the provided context
+- Does NOT invent `_compute_*`, `_calculate_*`, `_get_*`, or `_reward_*` functions
+- Prefers inline reward expressions using available variables
 
 CRITICAL INDENTATION RULES:
 - Use EXACTLY 4 spaces per indentation level. Do NOT use tabs.
@@ -293,6 +301,14 @@ CRITICAL INDENTATION RULES:
 - Look at the line-numbered source to see the EXACT indentation pattern.
 - If the function body is indented 8 spaces, your added lines must also use 8 spaces for the same level.
 - Test mentally: would your lines compile if pasted into the function?
+
+CRITICAL HELPER RULES:
+- Do NOT call helper methods that are not already defined in the provided context.
+- Do NOT invent `_compute_*`, `_calculate_*`, `_get_*`, or `_reward_*` functions.
+- Prefer inline reward expressions using available variables.
+- If introducing a helper method, include the complete method definition in the same diff.
+- A patch calling an undefined helper is invalid.
+- For potential-based reward, use inline potential terms unless an existing potential function is already present.
 
 If you cannot generate a valid semantic patch, output an empty diff: "--- a/file\n+++ b/file\n"
 

@@ -24,6 +24,9 @@ class RepairStrategy(str, Enum):
     DIRECT_DIFF_REPAIR = "direct_diff_repair"
     LOCAL_HUNK_REGENERATION = "local_hunk_regeneration"
     IDEA_REGENERATION_FROM_BASELINE = "idea_regeneration_from_baseline"
+    MISSING_HELPER_REPAIR = "missing_helper_repair"
+    INLINE_CONVERSION = "inline_conversion"
+    VARIABLE_GROUNDED_REGENERATION = "variable_grounded_regeneration"
 
 
 @dataclass
@@ -322,6 +325,32 @@ def build_syntax_repair_prompt(
             "Do NOT copy the failed diff. Start fresh."
         )
 
+    # Add missing helper repair strategy instructions
+    if strategy == RepairStrategy.MISSING_HELPER_REPAIR:
+        strategy_instruction = (
+            "The patch calls a helper method that is not defined. "
+            "You must either:\n"
+            "1. Convert the helper call to an inline expression using available variables, OR\n"
+            "2. Include the complete helper method definition in the same diff.\n"
+            "Do NOT call methods that are not already defined in the provided context. "
+            "Prefer inline reward expressions using available variables. "
+            "If introducing a helper method, include the complete method definition in the same diff."
+        )
+    elif strategy == RepairStrategy.INLINE_CONVERSION:
+        strategy_instruction = (
+            "Convert the undefined helper method call to an inline reward expression. "
+            "Use only variables that are available in the current context. "
+            "Do NOT call any new helper methods. "
+            "Generate a minimal inline expression that implements the reward idea."
+        )
+    elif strategy == RepairStrategy.VARIABLE_GROUNDED_REGENERATION:
+        strategy_instruction = (
+            "The previous repair failed because required variables are not available. "
+            "Generate a NEW reward expression using ONLY the available variables listed above. "
+            "Do NOT use any variables that are not in the available list. "
+            "Create a minimal reward term that uses only available variables."
+        )
+
     sections.append(f"## Instructions\n{strategy_instruction}")
 
     constraints = """## Constraints
@@ -397,6 +426,9 @@ class RepairAttemptTracker:
             "direct_diff_repair": 2,
             "local_hunk_regeneration": 2,
             "idea_regeneration_from_baseline": 2,
+            "missing_helper_repair": 2,
+            "inline_conversion": 2,
+            "variable_grounded_regeneration": 2,
         }
 
         self.total_attempts = 0
@@ -412,6 +444,9 @@ class RepairAttemptTracker:
             RepairStrategy.DIRECT_DIFF_REPAIR,
             RepairStrategy.LOCAL_HUNK_REGENERATION,
             RepairStrategy.IDEA_REGENERATION_FROM_BASELINE,
+            RepairStrategy.MISSING_HELPER_REPAIR,
+            RepairStrategy.INLINE_CONVERSION,
+            RepairStrategy.VARIABLE_GROUNDED_REGENERATION,
         ]
 
     @property
