@@ -1,6 +1,7 @@
 # Reward LangGraph v0.8.9 项目交接文档
 
 **生成日期**: 2026-06-17
+**最后更新**: 2026-06-17（含论文池下载说明、安全清理、分支修正）
 **基于**: 仓库实际代码、reports、run artifacts、candidate handoff artifacts 和 git 状态
 
 ---
@@ -12,18 +13,30 @@
 | 最终分支 | `reward-langgraph-v0.8.9-candidate-bank-handoff` |
 | 最终 tag | `reward-langgraph-v0.8.9` |
 | 最终 tag commit | `203f50c` |
-| 当前 handover 文档 commit | 待提交（本文档） |
+| 当前分支最新 commit | `0f99930` |
 | 是否已 push 到 origin | 分支和 tag 均已 push |
-| origin branch 指向 | `203f50c` (`refs/heads/reward-langgraph-v0.8.9-candidate-bank-handoff`) |
-| origin tag 指向 | `203f50c` (`refs/tags/reward-langgraph-v0.8.9`) |
+| origin branch 指向 | `0f99930` |
+| origin tag 指向 | `203f50c`（`refs/tags/reward-langgraph-v0.8.9`，未移动） |
 | older tags 是否 untouched | 是，v0.1 至 v0.8.8 全部保留 |
-| working tree | 本次提交前 clean（新增 handover 文档后变 dirty） |
+| working tree | clean |
 | HRRL2/env.py hash | `e19703467be71e20`（已从仓库确认） |
+| HRRL2 v0 基线分支 | [`v0-baseline`](https://github.com/Ma-mingliang/HRRL2-test/tree/v0-baseline) |
 | baseline guard 状态 | `baseline_guard_passed=True`, `baseline_guard_run=True` |
 | train_called | false |
 | full_eval_called | false |
+| 论文池 | 435 PDF + 150 MD，需从 GitHub Releases 下载 |
 
-**说明**: v0.8.9 tag 固定在 `203f50c`。当前 handover 文档作为后续 docs commit 推送到同一分支，但不移动 tag。
+**说明**: v0.8.9 tag 固定在 `203f50c`，后续 docs commit 推送到同一分支但不移动 tag。
+
+### 最近 docs 提交记录
+
+| Commit | 内容 |
+|--------|------|
+| `0f99930` | 添加论文池下载说明（quickstart、handover、papers/README.md） |
+| `042e4db` | 安全清理：移除 key 前缀、key 长度、泄露的 API key |
+| `6e3569e` | 修正 HRRL2 基线分支：`main` → `v0-baseline` |
+| `8db331f` | 添加 HRRL2 GitHub 链接、克隆说明、optimizer 角色描述 |
+| `458188f` | 添加 HRRL2 GitHub 链接和获取说明 |
 
 ---
 
@@ -106,6 +119,8 @@ git checkout v0-baseline  # 使用 v0 基线分支
 | 不使用 git push --tags | 只推当前分支和指定 tag |
 | 不把 CUDA/pagefile infra failure 记作 candidate failure | 这是基础设施问题，不是候选问题 |
 | 不把 validation-ready 说成 full-eval-passed | 无训练结果 = 无性能声称 |
+
+**安全清理记录** (2026-06-17): 已从所有跟踪文件中移除 key 前缀（`tp-shkic...`）、key 长度（`key_length=51`）和一个泄露的真实 API key（v0.6 validation report 中的 `tp-s48j...`）。`.env` 文件未被 git 跟踪。
 
 ---
 
@@ -670,15 +685,21 @@ v0.8.5/v0.8.6 报告中记录的 1 pre-existing Windows path failure 不属于 v
 
 2. **先阅读 v0.8.9 handoff artifacts。** `docs/artifacts/reward_langgraph_v0_8_9_candidate_handoff/` 包含所有候选 patches 和使用说明。
 
-3. **如果要继续，优先解决资源环境或低资源训练方案。** 当前阻塞因素是 Windows 页面文件 / CUDA 资源问题（WinError 1455）。
+3. **下载论文池。** 论文 PDF + markitdown MD 文件不在 git 中，需从 GitHub Releases 下载 `reward_paper_pool_papers.zip`（约 814MB），解压到项目根目录。详见附录 C 或 `research_agent/reward_paper_pool/papers/README.md`。
 
-4. **如果不训练，v0.8.9 可以作为稳定里程碑归档。** 所有候选 patches 已导出、metadata 已保存、future training commands 已文档化。
+4. **使用正确的 HRRL2 基线分支。** 克隆 HRRL2 后务必 `git checkout v0-baseline`，不要用 `main`。详见 1.1 节。
 
-5. **如果要扩展 method pool，应先增加真实 reward templates，再做 proposal-only campaign。** 当前 method pool 中的模板来自文献，但数量有限。
+5. **如果要继续，优先解决资源环境或低资源训练方案。** 当前阻塞因素是 Windows 页面文件 / CUDA 资源问题（WinError 1455）。
 
-6. **如果要训练，只训练 top 1–2 candidates，不要直接扩大。** 从 test_control_energy_005 开始，评估后再决定是否扩展。
+6. **如果不训练，v0.8.9 可以作为稳定里程碑归档。** 所有候选 patches 已导出、metadata 已保存、future training commands 已文档化。
 
-7. **如继续做 proposal，不要再只优化 prompt，要先增强 method pool 的真实模板质量。** v0.8.4-v0.8.8 的经验表明，prompt 优化的收益递减，模板质量才是关键。
+7. **如果要扩展 method pool，应先增加真实 reward templates，再做 proposal-only campaign。** 当前 method pool 中的模板来自文献，但数量有限。
+
+8. **如果要训练，只训练 top 1–2 candidates，不要直接扩大。** 从 test_control_energy_005 开始，评估后再决定是否扩展。
+
+9. **如继续做 proposal，不要再只优化 prompt，要先增强 method pool 的真实模板质量。** v0.8.4-v0.8.8 的经验表明，prompt 优化的收益递减，模板质量才是关键。
+
+10. **注意安全。** 仓库中不包含任何真实密钥（已清理），但 `.env` 文件在本地磁盘上。不要将 `.env` 提交到 git，不要在文档中打印密钥值。
 
 ---
 
