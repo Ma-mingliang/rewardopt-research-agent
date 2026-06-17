@@ -1,0 +1,15 @@
+--- a/env.py
++++ b/env.py
+@@ -971,2 +971,5 @@
+         action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
++        # Control energy penalty: quadratic cost on action magnitude
++        w_ctrl = 0.01
++        control_energy = -w_ctrl * target_handle_angle ** 2
+
+@@ -995,2 +995,7 @@
+         reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + residual_penalty + subgoal_reward
++        # Control energy penalty
++        control_energy = 0.0
++        if abs(target_handle_angle) > 0.1:
++            control_energy = -0.01 * target_handle_angle ** 2
++        reward += control_energy

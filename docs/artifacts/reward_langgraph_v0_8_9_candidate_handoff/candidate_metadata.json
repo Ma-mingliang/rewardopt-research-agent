@@ -1,0 +1,90 @@
+{
+  "source_run_id": "20260617_123033_reward_langgraph_8bac43",
+  "env_hash": "e19703467be71e20",
+  "baseline_manifest": "docs/baselines/hrrl2_operational_baseline.yaml",
+  "train_called": false,
+  "full_eval_called": false,
+  "candidates": [
+    {
+      "rank": 2,
+      "candidate_id": "reward_langgraph_c001",
+      "iteration": 1,
+      "selected_template": "test_pbrs_001",
+      "method_ids": [
+        "test_pbrs_001",
+        "test_risk_penalty_004"
+      ],
+      "method_categories": [],
+      "reward_terms_added": [
+        "# Risk penalty: large penalty for high angular velocity or large error",
+        "risk_penalty = 0.0",
+        "if angular_velocity > 1.5 or current_error > 0.3:",
+        "risk_penalty = -3.0",
+        "reward += risk_penalty"
+      ],
+      "diff_hash": "f24a8007b90d223e",
+      "semantic_rank_score": 0.605,
+      "complexity_penalty": 0.3,
+      "proposal_source_penalty": 0.05,
+      "proposal_source": "semantic_regeneration",
+      "syntax_valid": true,
+      "validation_passed": true,
+      "semantic_gate_decision": "passed",
+      "duplicate_similarity_max": 0.0,
+      "diff_file": "candidate_patches/test_pbrs_001.diff"
+    },
+    {
+      "rank": 3,
+      "candidate_id": "reward_langgraph_c001",
+      "iteration": 1,
+      "selected_template": "test_curriculum_003",
+      "method_ids": [
+        "test_curriculum_003",
+        "test_sparse_to_dense_002"
+      ],
+      "method_categories": [],
+      "reward_terms_added": [
+        "# Stability penalty: large penalty for near-fall conditions",
+        "stability_penalty = 0.0",
+        "if angular_velocity > 2.0 or current_error > 0.5:",
+        "stability_penalty = -5.0",
+        "reward += stability_penalty"
+      ],
+      "diff_hash": "7eda63e3418ac38d",
+      "semantic_rank_score": 0.605,
+      "complexity_penalty": 0.3,
+      "proposal_source_penalty": 0.05,
+      "proposal_source": "semantic_regeneration",
+      "syntax_valid": true,
+      "validation_passed": true,
+      "semantic_gate_decision": "passed",
+      "duplicate_similarity_max": 0.0,
+      "diff_file": "candidate_patches/test_curriculum_003.diff"
+    },
+    {
+      "rank": 1,
+      "candidate_id": "reward_langgraph_c001",
+      "iteration": 1,
+      "selected_template": "test_control_energy_005",
+      "method_ids": [
+        "test_control_energy_005"
+      ],
+      "method_categories": [],
+      "reward_terms_added": [
+        "# Control energy penalty: quadratic cost on action magnitude",
+        "reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + residual_penalty + subgoal_reward + control_energy",
+        "reward += control_energy"
+      ],
+      "diff_hash": "abd2fd8a4558e165",
+      "semantic_rank_score": 0.626,
+      "complexity_penalty": 0.16,
+      "proposal_source_penalty": 0.05,
+      "proposal_source": "semantic_regeneration",
+      "syntax_valid": true,
+      "validation_passed": true,
+      "semantic_gate_decision": "passed",
+      "duplicate_similarity_max": 0.0,
+      "diff_file": "candidate_patches/test_control_energy_005.diff"
+    }
+  ]
+}

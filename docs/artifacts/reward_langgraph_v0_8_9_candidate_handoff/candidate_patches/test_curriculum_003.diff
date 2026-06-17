@@ -1,0 +1,9 @@
+--- a/env.py
++++ b/env.py
+@@ -995,2 +995,7 @@
+         reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + residual_penalty + subgoal_reward
++        # Stability penalty: large penalty for near-fall conditions
++        stability_penalty = 0.0
++        if angular_velocity > 2.0 or current_error > 0.5:
++            stability_penalty = -5.0
++        reward += stability_penalty
