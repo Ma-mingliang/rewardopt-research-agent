@@ -7,9 +7,9 @@
 
 project: HRRL2
 file: env.py
-accepted_operational_baseline_hash: "e19703467be71e20"
-historical_baseline_hash: "5ffc1e934e1f8908"
-accepted_since: "reward-langgraph-v0.6.2.2"
+accepted_operational_baseline_hash: "a08f66bb363e375cd0e18a4c2bc5df0d"
+historical_baseline_hash: "e19703467be71e20"
+accepted_since: "reward-langgraph-v0.8.9"
 classification: "auto_push_baseline_migration_without_review"
 acceptance_reason:
   - "HRRL2 directory is gitignored"

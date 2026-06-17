@@ -11,6 +11,19 @@ from pathlib import Path
 import click
 import yaml
 
+# Load .env file from project root
+try:
+    from dotenv import load_dotenv
+    # Try to find .env in current directory or parent directories
+    env_path = Path.cwd() / ".env"
+    if not env_path.exists():
+        # Try parent directory
+        env_path = Path.cwd().parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass
+
 from research_agent.core.config import AgentConfig, load_config
 from research_agent.core.exceptions import ResearchAgentError
 from research_agent.core.output import error_response, ok_response, print_json

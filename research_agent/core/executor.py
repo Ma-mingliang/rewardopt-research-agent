@@ -1399,6 +1399,7 @@ def _execute_phase(
     sampler=None,
     mock_llm: bool = False,
     execution_python: str | None = None,
+    observer: Any | None = None,
 ) -> dict:
     """Execute a single experiment phase."""
     phase_id = phase.get("phase_id", "unknown")
