@@ -44,7 +44,7 @@
 |------|-----|
 | GitHub 地址 | `https://github.com/Ma-mingliang/HRRL2-test.git` |
 | 测试副本 | `https://github.com/Ma-mingliang/HRRL2-test-test.git` |
-| v0 基线分支 | `main`（推荐，未经优化器修改的干净基线） |
+| v0 基线分支 | [`v0-baseline`](https://github.com/Ma-mingliang/HRRL2-test/tree/v0-baseline)（推荐，未经优化器修改的干净基线） |
 | 优化器运行分支 | `optimizer-run`, `optimizer-run-v2`（含 accepted/rejected 候选历史） |
 | 本地路径 | `research-agent/HRRL2/`（gitignored，需单独克隆） |
 
@@ -54,10 +54,10 @@
 # 在 research-agent 根目录下
 git clone https://github.com/Ma-mingliang/HRRL2-test.git HRRL2
 cd HRRL2
-git checkout main  # 使用 v0 基线分支
+git checkout v0-baseline  # 使用 v0 基线分支
 ```
 
-**重要**: 使用 `main` 分支作为基线。`optimizer-run` 和 `optimizer-run-v2` 分支已被优化器修改过，不是干净的基线。
+**重要**: 使用 `v0-baseline` 分支作为基线（https://github.com/Ma-mingliang/HRRL2-test/tree/v0-baseline）。`main`、`optimizer-run` 和 `optimizer-run-v2` 分支已被优化器修改过，不是干净的基线。
 
 ### HRRL2 在 optimizer 中的角色
 

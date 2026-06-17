@@ -27,11 +27,11 @@ HRRL2 是一个独立的 Git 仓库，被 research-agent 通过 `.gitignore` 排
 
 | 分支 | 用途 |
 |------|------|
-| `main` | **v0 基线分支（推荐）**，包含初始 HRRL2 代码，未经优化器修改 |
+| `v0-baseline` | **v0 基线分支（推荐）**，包含初始 HRRL2 代码，未经优化器修改 |
 | `optimizer-run` | 优化器运行历史分支（含 accepted/rejected 候选） |
 | `optimizer-run-v2` | 优化器运行历史分支 v2（含更多 accepted/rejected 候选） |
 
-**重要**: 使用 `main` 分支作为基线。`optimizer-run` 和 `optimizer-run-v2` 分支已被优化器修改过，不是干净的基线。
+**重要**: 使用 `v0-baseline` 分支作为基线（https://github.com/Ma-mingliang/HRRL2-test/tree/v0-baseline）。`main`、`optimizer-run` 和 `optimizer-run-v2` 分支已被优化器修改过，不是干净的基线。
 
 ### 获取 HRRL2
 
@@ -40,7 +40,7 @@ HRRL2 是一个独立的 Git 仓库，被 research-agent 通过 `.gitignore` 排
 cd research-agent
 git clone https://github.com/Ma-mingliang/HRRL2-test.git HRRL2
 cd HRRL2
-git checkout main
+git checkout v0-baseline
 cd ..
 
 # 方式 2: 如果 HRRL2 目录已存在但为空
@@ -61,7 +61,7 @@ ls HRRL2/3D/
 # 确认 env.py baseline hash（必须为 e19703467be71e20）
 python -c "import hashlib; print(hashlib.sha256(open('HRRL2/env.py','rb').read()).hexdigest()[:16])"
 
-# 确认当前分支（应为 main）
+# 确认当前分支（应为 v0-baseline）
 cd HRRL2 && git branch --show-current && cd ..
 ```
 
