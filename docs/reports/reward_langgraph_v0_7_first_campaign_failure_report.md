@@ -27,7 +27,7 @@
 
 | Check | Result |
 |-------|--------|
-| Credential preflight | key_present=true, key_source=dotenv, key_length=51 |
+| Credential preflight | key_present=true, key_source=dotenv |
 | Baseline guard | **PASSED** (env_hash=e19703467be71e20) |
 | Method pool loaded | 5 methods, 4 categories |
 | env.py hash | **unchanged** (e19703467be71e20) |

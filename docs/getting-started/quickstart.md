@@ -166,7 +166,7 @@ python -m pytest tests/ -q
 ```bash
 # 1. 配置 API key
 cp .env.example .env
-# 编辑 .env，填入 MIMO_API_KEY（51 字符，前缀 tp-shkic...）
+# 编辑 .env，填入 MIMO_API_KEY
 
 # 2. 确认 HRRL2 存在
 ls HRRL2/env.py

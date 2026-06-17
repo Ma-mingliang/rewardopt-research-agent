@@ -96,7 +96,7 @@ conda run -n langgraph python run_optimizer.py \
 **Preflight 输出：**
 
 ```
-[CREDENTIAL] key_present=True key_source=dotenv key_length=51
+[CREDENTIAL] key_present=True key_source=dotenv
 ```
 
 **Run 结果：**

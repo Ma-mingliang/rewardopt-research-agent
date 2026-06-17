@@ -100,7 +100,7 @@ git checkout v0-baseline  # 使用 v0 基线分支
 | 不使用 --accept-baseline-migration | 基线迁移必须经过人工审计 |
 | 不关闭 baseline guard | `research_agent/core/baseline_guard.py` 始终启用 |
 | 不移动已推送的 tag | v0.1 至 v0.8.9 全部固定 |
-| 不泄露 MIMO_API_KEY | `.env` 中 51 字符密钥，前缀 `tp-shkic...` |
+| 不泄露 MIMO_API_KEY | `.env` 中的 API 密钥，不可提交或打印 |
 | 不提交 .env / checkpoint / 大日志 / 私有配置 | `.gitignore` 已配置 |
 | campaign 必须显式使用 --optimizer reward_langgraph | 不使用默认 optimizer |
 | 不使用 git push --tags | 只推当前分支和指定 tag |

@@ -102,7 +102,7 @@ The real LLM run printed:
 **Impact:** The system correctly detected the empty API key and fell back to mock mode, generating a no-op candidate with empty patch. No real LLM calls were made.
 
 **Resolution:** Before a real LLM run, the user must either:
-1. `export MIMO_API_KEY=tp-s48jto7hg1pcro1k9f4dkejwtsv3djrb2bjkx5m87g1cdrjv` in the shell before running
+1. `export MIMO_API_KEY=<your_api_key>` in the shell before running
 2. Or add `python-dotenv` loading to `run_optimizer.py`
 
 This is documented as a known limitation, not a code bug — the system handled it gracefully.
