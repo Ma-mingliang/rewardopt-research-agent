@@ -2680,14 +2680,13 @@ def _execute_optimizer_phase(
                 proposal_source = "semantic_regeneration"
             else:
                 proposal_source = "primary"
-            # Track template diversity
-            if observer and observer.is_active:
-                selected_tpl = ""
-                if candidate_ideas:
-                    first_idea = candidate_ideas[0] if isinstance(candidate_ideas[0], dict) else {}
-                    selected_tpl = first_idea.get("template_id", first_idea.get("method_id", ""))
-                if selected_tpl:
-                    observer.track_template_selection(selected_tpl)
+            # Track template diversity (v0.8.7: track all methods in batch)
+            if observer and observer.is_active and candidate_ideas:
+                for idea in candidate_ideas:
+                    if isinstance(idea, dict):
+                        tpl = idea.get("template_id", idea.get("method_id", ""))
+                        if tpl:
+                            observer.track_template_selection(tpl)
             _write_candidate_bank_record(
                 bank_path=candidate_bank_path,
                 candidate=candidate,
@@ -2701,6 +2700,7 @@ def _execute_optimizer_phase(
             )
 
             candidate_results.append(candidate.to_dict())
+            _mark_batch("tried", reason="proposal_only_validated")
             try:
                 patch_manager.rollback_patch(candidate)
             except Exception:

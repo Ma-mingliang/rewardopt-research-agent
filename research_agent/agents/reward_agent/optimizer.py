@@ -19,6 +19,7 @@ from research_agent.reward_methods.formatter import (
     build_source_meta_from_records,
     format_method_context,
 )
+from research_agent.reward_methods.diversity_scheduler import DiversityScheduler
 from research_agent.reward_methods.schema import RewardMethodRecord
 from research_agent.reward_methods.selector import MethodSelector
 
@@ -46,6 +47,7 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         )
         self._graph = None
         self._observer = observer
+        self._diversity_scheduler = DiversityScheduler()
 
     @property
     def graph(self):
@@ -95,13 +97,22 @@ class LangGraphRewardOptimizer(BaseOptimizer):
         if method_pool:
             active_cats = self.config.optimizer.active_categories
             top_k = self.config.optimizer.method_top_k
-            selector = MethodSelector(method_pool)
+            # Use diversity scheduler to re-rank pool favoring under-used categories
+            exclude = set(previous_method_ids or [])
+            ranked_pool = self._diversity_scheduler.rank_for_diversity(
+                method_pool, exclude_ids=exclude,
+            )
+            selector = MethodSelector(ranked_pool)
             selected = selector.select(categories=active_cats or None, top_k=top_k)
+            # Record selections for next iteration's diversity tracking
+            for m in selected:
+                self._diversity_scheduler.record_selection(m.method_id, m.category)
             method_pool_context = format_method_context(selected)
             method_pool_ids = [m.method_id for m in selected]
             pool_meta = build_source_meta_from_records(selected)
             source_meta["method_pool_method_ids"] = pool_meta["source_method_ids"]
             source_meta["method_pool_categories"] = pool_meta["source_categories"]
+            source_meta["diversity_score"] = self._diversity_scheduler.compute_diversity_score()
 
         if self._mock_llm:
             if self._observer and self._observer.is_active:
